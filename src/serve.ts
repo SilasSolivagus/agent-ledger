@@ -22,6 +22,7 @@ import { createServer, type Server } from 'node:http'
 import { spawn } from 'node:child_process'
 import { listTranscripts, readTranscript, type TranscriptFile } from './transcript.js'
 import { renderIndex, renderSession } from './render.js'
+import { redactSession } from './redact.js'
 import type { Session } from './types.js'
 
 /** How to serve. */
@@ -29,6 +30,8 @@ export interface ServeOptions {
   port: number
   /** How many recent sessions the index reads and totals. */
   limit: number
+  /** Serve shape without content — safe for a screen share. */
+  redact?: boolean
   /** Transcript roots; defaults to the standard locations. */
   roots?: { claude?: string; codex?: string }
 }
@@ -65,7 +68,12 @@ export function createLedgerServer(options: ServeOptions): Server {
   const load = async (file: TranscriptFile): Promise<Session | undefined> => {
     const hit = cache.get(file.path)
     if (hit !== undefined && hit.mtimeMs === file.mtimeMs) return hit.session
-    const session = await readTranscript(file)
+    const parsed = await readTranscript(file)
+    // Redacting on the way into the cache means no route can serve the raw
+    // session by forgetting to ask for it.
+    const session = parsed !== undefined && options.redact === true
+      ? redactSession(parsed)
+      : parsed
     cache.set(file.path, session === undefined
       ? { mtimeMs: file.mtimeMs }
       : { mtimeMs: file.mtimeMs, session })
@@ -163,6 +171,7 @@ export async function serve(options: ServeOptions, open: boolean): Promise<numbe
   if (!listening) return 1
 
   console.error(`agent-ledger serving on ${url}`)
+  if (options.redact === true) console.error('  redacted — shape only, no commands, paths, or conversation')
   console.error(`  index reads the ${String(options.limit)} most recent sessions · refresh to pick up new ones`)
   console.error('  local only, nothing uploaded · Ctrl-C to stop')
   if (open) openBrowser(url)

@@ -18,6 +18,7 @@ import { summarise, averageStatic } from './summary.js'
 import { renderDashboard } from './render.js'
 import { readAllSessions } from './transcript.js'
 import { serve } from './serve.js'
+import { redactAll } from './redact.js'
 import type { Session, Step } from './types.js'
 
 export const USAGE = `agent-ledger — see what your coding agent actually did
@@ -26,9 +27,12 @@ Usage:
   agent-ledger serve [--port <n>] [--limit <n>] [--no-open] [--redact]
         open one address that stays; refresh to see the session you are in
         --limit is per agent, so a quiet one never falls off the page
+        --redact serves the shape only — for a screen share or a demo
 
-  agent-ledger report [--out <file>] [--limit <n>]
+  agent-ledger report [--out <file>] [--limit <n>] [--redact]
         read what Claude Code and Codex already wrote down, and render it
+        --redact drops every word you or the model wrote, keeping only the
+        shape: turns, tools, tokens, timings. Share that, not the raw page.
 
   agent-ledger sessions [--limit <n>]
         list what it can see
@@ -122,13 +126,14 @@ async function record(port: number): Promise<number> {
 }
 
 /** Render everything recorded. */
-async function report(out: string | undefined, limit: number): Promise<number> {
-  const sessions = [...await readAllSessions(limit), ...await loadSessions()]
-  if (sessions.length === 0) {
+async function report(out: string | undefined, limit: number, hide: boolean): Promise<number> {
+  const found = [...await readAllSessions(limit), ...await loadSessions()]
+  if (found.length === 0) {
     console.error('agent-ledger: no sessions found.')
     console.error('  Looked in ~/.claude/projects and ~/.codex/sessions.')
     return 1
   }
+  const sessions = redactAll(found, hide)
   const html = renderDashboard(sessions)
   if (out === undefined) { console.log(html); return 0 }
   await writeFile(out, html, 'utf8')
@@ -163,11 +168,17 @@ export async function main(argv: readonly string[]): Promise<number> {
   }
   switch (verb) {
     case 'serve': return await serve(
-      { port: Number(flag('--port') ?? 4489), limit: Number(flag('--limit') ?? 40) },
+      {
+        port: Number(flag('--port') ?? 4489),
+        limit: Number(flag('--limit') ?? 40),
+        redact: rest.includes('--redact'),
+      },
       !rest.includes('--no-open'),
     )
     case 'record': return await record(Number(flag('--port') ?? 4488))
-    case 'report': return await report(flag('--out'), Number(flag('--limit') ?? 40))
+    case 'report': return await report(
+      flag('--out'), Number(flag('--limit') ?? 40), rest.includes('--redact'),
+    )
     case 'sessions': return await list(Number(flag('--limit') ?? 40))
     case undefined: case '-h': case '--help': console.log(USAGE); return 0
     default: console.error(`agent-ledger: unknown command "${verb}"\n\n${USAGE}`); return 2

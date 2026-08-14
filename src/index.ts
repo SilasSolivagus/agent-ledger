@@ -8,6 +8,7 @@ export { summarise, averageStatic, byAgent, median } from './summary.js'
 export { renderDashboard, renderIndex, renderSession, chooseUnit } from './render.js'
 export { createLedgerServer, serve } from './serve.js'
 export { profile, profiles, stepsByTurn } from './profile.js'
+export { redactSession, redactAll } from './redact.js'
 export type { AgentProfile } from './profile.js'
 export {
   listTranscripts, readTranscript, readAllSessions,
