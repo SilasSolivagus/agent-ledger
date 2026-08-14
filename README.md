@@ -9,9 +9,10 @@ Claude Code 和 Codex 都会把每次会话完整写在你本机上，但都没�
 ## 用
 
 ```sh
-npx agent-ledger report --out ledger.html
-open ledger.html
+npx agent-ledger serve
 ```
+
+浏览器自己会打开。一个地址一直在那儿，刷新就是最新的——包括你此刻正在跑的这个会话。
 
 不需要配置，不需要 API key，不需要改你 agent 的任何设置。它读的是这两个目录：
 
@@ -20,12 +21,20 @@ open ledger.html
 | Claude Code | `~/.claude/projects/**/*.jsonl` |
 | Codex | `~/.codex/sessions/**/*.jsonl` |
 
+首页是总账加一张会话表，点会话号进去看那一次的轨迹和逐条账本。**列会话不读文件，只有你点开的那个才被解析**，解析完按文件修改时间缓存——所以一千多个会话也开得动，正在写入的那个会自动重读。
+
 其他命令：
 
 ```sh
-agent-ledger sessions            # 列出能看到的会话
-agent-ledger report --limit 10   # 只看最近 10 个
+agent-ledger serve --port 5000 --limit 100   # 换端口 · 首页读最近 100 个
+agent-ledger serve --no-open                 # 不自动开浏览器
+agent-ledger sessions                        # 列出能看到的会话
+agent-ledger report --out ledger.html        # 导出一个自包含 HTML 文件
 ```
+
+`report` 把读到的**每一个**会话都画进同一个文件，按时间倒序。默认 40 个会话大约 2 MB——要小一点用 `--limit`。
+
+服务只绑 `127.0.0.1`，不监听外部地址。
 
 ## 看到什么
 
@@ -57,19 +66,22 @@ agent-ledger report --limit 10   # 只看最近 10 个
 
 诚实清单：
 
-- **Codex 的账本是空的**。数字（步数、token、工具调用）已经能读，但逐条事件还没做——它的记录结构和 Claude Code 不同。
-- **没有常驻服务**。现在每次看都要重新生成一次文件。`agent-ledger serve` 还没做。
-- **没有筛选和搜索**。会话多了以后不好找。
 - **没有脱敏模式**。所以现在不能安全地把报告分享出去。
+- **Codex 的账本是空的**。数字（步数、token、工具调用）已经能读，但逐条事件还没做——它的记录结构和 Claude Code 不同。
+- **没有筛选和搜索**。会话表按时间排，一千多个会话里找特定的那个只能靠肉眼。
+- **「会话跨度」不是模型耗时**。会话记录里没有单步耗时，这个数是相邻两条记录的时间差累加，中间包含工具执行和你去喝咖啡的时间。真的模型耗时要走 `record` 代理才量得到。
 - **固定负载需要代理才能测到**。会话记录里不含请求信封（system prompt + 工具 schema），所以「每次请求固定携带多少」这个数字需要 `agent-ledger record` 走一次代理才有。**注意：Claude Code 的订阅登录态（OAuth）不允许走自定义 base URL，会被服务端拒绝**，这条路只对 API key 用户可用。
 
 ## 开发
 
 ```sh
-pnpm install && pnpm run check   # 构建 + 14 个测试
+pnpm install && pnpm run check   # 构建 + 20 个测试
 ```
 
 代理相关的测试是重点：它站在人和他们付费使用的模型之间，所以「字节原样透传」「我们的 bug 绝不能变成用户的报错」必须被验证，而不是写在注释里。
+
+服务端的重点是另外三条：**URL 里的 id 永远不会变成文件路径**（只在已列出的文件里比对，没有可拼接的东西）、**正在写入的会话必须被重读**（缓存看 mtime）、**解析出错不能把服务带走**。
+
 
 ## License
 

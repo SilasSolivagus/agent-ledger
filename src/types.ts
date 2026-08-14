@@ -105,8 +105,16 @@ export interface Totals {
   cacheHitRate: number
   /** Median time-to-first-token across steps that reported one. */
   medianTtftMs: number
-  /** Total wall time spent waiting on the model. */
-  modelMs: number
+  /**
+   * Wall time the steps span, end to end.
+   *
+   * Transcripts record no duration, so a step's is the gap since the previous
+   * record — which contains the model, the tool it ran, and however long the
+   * person took to read the answer. That makes this a span, not a cost. Naming
+   * it after the model would invite the reader to divide it by steps and
+   * believe the result.
+   */
+  spanMs: number
   /** Per-tool call counts, most used first. */
   topTools: { name: string; calls: number }[]
 }

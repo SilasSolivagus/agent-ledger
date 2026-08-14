@@ -17,11 +17,15 @@ import { parseStep } from './parse.js'
 import { summarise, averageStatic } from './summary.js'
 import { renderDashboard } from './render.js'
 import { readAllSessions } from './transcript.js'
+import { serve } from './serve.js'
 import type { Session, Step } from './types.js'
 
 export const USAGE = `agent-ledger — see what your coding agent actually did
 
 Usage:
+  agent-ledger serve [--port <n>] [--limit <n>] [--no-open] [--redact]
+        open one address that stays; refresh to see the session you are in
+
   agent-ledger report [--out <file>] [--limit <n>]
         read what Claude Code and Codex already wrote down, and render it
 
@@ -157,6 +161,10 @@ export async function main(argv: readonly string[]): Promise<number> {
     return at >= 0 ? rest[at + 1] : undefined
   }
   switch (verb) {
+    case 'serve': return await serve(
+      { port: Number(flag('--port') ?? 4489), limit: Number(flag('--limit') ?? 40) },
+      !rest.includes('--no-open'),
+    )
     case 'record': return await record(Number(flag('--port') ?? 4488))
     case 'report': return await report(flag('--out'), Number(flag('--limit') ?? 40))
     case 'sessions': return await list(Number(flag('--limit') ?? 40))

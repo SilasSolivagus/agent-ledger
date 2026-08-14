@@ -157,7 +157,8 @@ body{margin:0;padding:38px 30px 52px;background:${T.paper};color:${T.paperInk};
 .card.wide{grid-column:1/-1}
 .card h2{font-size:16.5px;font-weight:700;letter-spacing:-.02em;margin:0 0 3px}
 .card .sub{font-size:11.5px;color:${T.muted};margin-bottom:16px}
-.card .src{font-size:9.5px;color:${T.faint};letter-spacing:.08em;margin-top:10px;font-weight:500}
+.src{font-size:9.5px;color:${T.muted};letter-spacing:.08em;margin-top:10px;font-weight:500;line-height:1.6}
+.card .src{color:${T.faint}}
 svg{width:100%;height:auto;display:block}
 text{font-family:Inter,-apple-system,sans-serif}
 .lbl{font-size:7px;font-weight:700;fill:${T.muted};letter-spacing:.06em}
@@ -196,6 +197,13 @@ tr.r-user td:nth-child(3){font-weight:600}
 .k-user{color:#1c1c1a}.k-assistant{color:#6b6a63}.k-tool{color:#8a6a2f}
 .k-system,.k-context{color:#a3a29a}
 td.res{color:#6b6a63;font-size:11px}
+td.num{font-variant-numeric:tabular-nums;text-align:right;padding-right:14px}
+.dim{color:#8f8e88}
+a{color:${T.paperInk};text-decoration:none;border-bottom:1px solid #c9c7bd;
+ font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px;font-weight:600}
+a:hover{border-bottom-color:${T.paperInk}}
+.lede a{font-family:inherit;font-size:inherit;font-weight:500;border-bottom:none;color:${T.muted}}
+.lede a:hover{color:${T.paperInk}}
 .tool{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px;font-weight:600}
 .turnrow td{border-bottom:1.5px solid ${T.paperInk};padding-top:15px;
  font-size:10px;font-weight:700;letter-spacing:.1em;color:${T.paperInk}}
@@ -206,33 +214,59 @@ function fig(n: string, k: string): string {
   return `<div class="fig"><div class="n">${esc(n)}</div><div class="k">${esc(k)}</div></div>`
 }
 
-/**
- * Render the whole ledger: headline figures, per-agent cost, trajectories.
- * @param sessions - everything recorded.
- * @returns a complete, self-contained HTML document.
- */
-export function renderDashboard(sessions: readonly Session[]): string {
+/** The shared document shell. One stylesheet, no script, no remote asset. */
+function page(title: string, body: string): string {
+  return `<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>${esc(title)}</title>
+<style>${STYLE}</style>
+</head>
+<body>
+<div class="wrap">
+${body}
+</div>
+</body>
+</html>
+`
+}
+
+/** `2026-08-14 15:30`, or nothing when the source recorded no time. */
+function when(at: number): string {
+  return at > 0 ? new Date(at).toISOString().slice(0, 16).replace('T', ' ') : ''
+}
+
+/** The one-line description under a session's heading. */
+function sessionSub(session: Session): string {
+  const t = summarise([session])
+  const where = session.cwd === undefined ? '' : ` · ${esc(session.cwd.split('/').slice(-2).join('/'))}`
+  const branch = session.gitBranch === undefined ? '' : ` · ${esc(session.gitBranch)}`
+  const version = session.agentVersion === undefined ? '' : ` ${esc(session.agentVersion)}`
+  return `${esc(session.agent)}${version} · ${when(session.startedAt)} · ${t.steps} 步 · `
+    + `${t.toolCalls} 次工具调用 · 跨度 ${(t.spanMs / 1000).toFixed(1)}s${where}${branch}`
+}
+
+/** The headline card: what everything on this page cost, in eight numbers. */
+function headlineCard(sessions: readonly Session[], scope: string): string {
   const totals = summarise(sessions)
   const stat = averageStatic(sessions)
-  const agents = byAgent(sessions)
-
-  const agentRows = [...agents.entries()]
-    .map(([agent, list]) => ({ label: agent.toUpperCase(), value: averageStatic(list).total }))
-    .filter(r => r.value > 0)
-    .sort((a, b) => b.value - a.value)
-
-  const toolRows = totals.topTools.slice(0, 12).map(t => ({ label: t.name.toUpperCase(), value: t.calls }))
-
-  const headline = `<div class="card wide">
+  return `<div class="card wide">
   <h2>总账</h2>
-  <div class="sub">全部记录 · ${totals.sessions} 个会话</div>
+  <div class="sub">${esc(scope)}</div>
   <div class="figs">
     ${stat.measuredSteps === 0
       ? fig('—', '每次请求固定携带')
       : fig(stat.total.toLocaleString('en-US'), '每次请求固定携带')}
     ${fig(`${(totals.cacheHitRate * 100).toFixed(0)}%`, '缓存命中')}
-    ${fig(`${String(totals.medianTtftMs)}ms`, '首 token 中位数')}
-    ${fig(`${(totals.modelMs / 60000).toFixed(1)}m`, '等待模型')}
+    ${// Transcripts carry no time-to-first-token, so this is zero for every
+      // session read off disk. Printing "0ms" would claim an instant reply;
+      // a dash says what is true — nobody measured it.
+      totals.medianTtftMs === 0
+        ? fig('—', '首 token 中位数')
+        : fig(`${String(totals.medianTtftMs)}ms`, '首 token 中位数')}
+    ${fig(`${(totals.spanMs / 60000).toFixed(1)}m`, '会话跨度')}
     ${fig(totals.input.toLocaleString('en-US'), '输入 token')}
     ${fig(totals.output.toLocaleString('en-US'), '输出 token')}
     ${fig(String(totals.steps), '步数')}
@@ -243,6 +277,122 @@ export function renderDashboard(sessions: readonly Session[]): string {
       ? ' · STATIC PAYLOAD NEEDS `agent-ledger record`, WHICH TRANSCRIPTS DO NOT CONTAIN'
       : ` · STATIC PAYLOAD FROM ${stat.measuredSteps} PROXIED STEP(S)`}</div>
 </div>`
+}
+
+/**
+ * The session list: every session as one row you can open.
+ *
+ * A dashboard that inlines every ledger stops working at about twenty
+ * sessions; this machine has over a thousand. So the index carries only what
+ * is cheap to know, and the reading happens one session at a time.
+ */
+function sessionList(sessions: readonly Session[]): string {
+  if (sessions.length === 0) return '<p class="empty">没有会话。</p>'
+  const rows = sessions.map(session => {
+    const t = summarise([session])
+    const dir = session.cwd === undefined ? '' : (session.cwd.split('/').pop() ?? '')
+    const events = session.events === undefined ? '' : String(session.events.length)
+    return `<tr>`
+      + `<td><a href="/s/${encodeURIComponent(session.id)}">${esc(session.id.slice(0, 12))}</a></td>`
+      + `<td class="kind">${esc(session.agent)}</td>`
+      + `<td class="n">${esc(when(session.startedAt))}</td>`
+      + `<td class="num">${t.steps}</td>`
+      + `<td class="num">${t.toolCalls}</td>`
+      + `<td class="num">${events}</td>`
+      + `<td>${esc(dir)}${session.gitBranch === undefined ? '' : ` <span class="dim">${esc(session.gitBranch)}</span>`}</td>`
+      + `</tr>`
+  })
+  return `<table><thead><tr>`
+    + `<th style="width:130px">会话</th><th style="width:92px">AGENT</th>`
+    + `<th style="width:130px">开始</th><th style="width:52px">步</th>`
+    + `<th style="width:52px">工具</th><th style="width:52px">账本</th><th>位置</th>`
+    + `</tr></thead><tbody>${rows.join('')}</tbody></table>`
+}
+
+/**
+ * The index a server hands out: what it all cost, and what there is to open.
+ * @param sessions - the sessions that were parsed, newest first.
+ * @param scanned - how many transcripts exist on this machine in total.
+ * @returns a complete, self-contained HTML document.
+ */
+export function renderIndex(sessions: readonly Session[], scanned: number): string {
+  const totals = summarise(sessions)
+  const agentRows = [...byAgent(sessions).entries()]
+    .map(([agent, list]) => ({ label: agent.toUpperCase(), value: averageStatic(list).total }))
+    .filter(r => r.value > 0)
+    .sort((a, b) => b.value - a.value)
+  const toolRows = totals.topTools.slice(0, 12).map(t => ({ label: t.name.toUpperCase(), value: t.calls }))
+
+  const perAgent = agentRows.length === 0 ? '' : `<div class="card wide">
+  <h2>各 agent 开口前先背了多少</h2>
+  <div class="sub">每次请求的固定负载均值 · 系统提示词 + 工具 schema</div>
+  ${tickChart(agentRows, 'TOKEN')}
+  <div class="src">固定负载 · 实测自真实请求</div>
+</div>`
+
+  const tools = toolRows.length === 0 ? '' : `<div class="card wide">
+  <h2>哪些工具真的跑了</h2>
+  <div class="sub">已读会话中的调用次数</div>
+  ${tickChart(toolRows, '次调用')}
+  <div class="src">工具调用 · 取自会话记录</div>
+</div>`
+
+  return page('Agent Ledger', `<div class="lede">
+  <h1>你的 agent 到底做了什么</h1>
+  <p>数据来自 Claude Code 与 Codex 自己写在本机的会话记录。点开任意一个会话，看它这一趟走了什么路。
+     全程只读本地文件，不上传任何内容。</p>
+  <div class="meta">本机共 ${scanned} 个会话记录 · 已读最近 ${sessions.length} 个 · ${totals.steps} 步</div>
+</div>
+${headlineCard(sessions, `最近 ${sessions.length} 个会话 · 本机共 ${scanned} 个`)}
+${perAgent}
+${tools}
+<div class="card wide">
+  <h2>会话</h2>
+  <div class="sub">按最后写入时间排序 · 点会话号打开轨迹与逐条账本</div>
+</div>
+<div class="ledger">${sessionList(sessions)}</div>`)
+}
+
+/**
+ * One session, in full: the shape of it, then the line-by-line of it.
+ * @param session - the session to show.
+ * @returns a complete, self-contained HTML document.
+ */
+export function renderSession(session: Session): string {
+  const body = `<div class="lede">
+  <div class="meta"><a href="/">← 全部会话</a></div>
+  <h1>会话 ${esc(session.id.slice(0, 12))}</h1>
+  <p>${sessionSub(session)}</p>
+</div>
+${headlineCard([session], '本次会话')}
+<div class="card wide">
+  <h2>轨迹</h2>
+  <div class="sub">一根发丝线是一步 · 圆点大小是这一步的耗时 · 方块是工具调用</div>
+  ${trajectory(session)}
+</div>
+${session.events === undefined
+  ? '<div class="card wide"><h2>账本</h2><div class="sub">这份记录没有逐条事件——Codex 的事件流还没做适配。</div></div>'
+  : `<div class="ledger">${ledger(session.events, 1000)}</div>`}`
+  return page(`会话 ${session.id.slice(0, 12)} — Agent Ledger`, body)
+}
+
+/**
+ * Render the whole ledger: headline figures, per-agent cost, trajectories.
+ * @param sessions - everything recorded.
+ * @returns a complete, self-contained HTML document.
+ */
+export function renderDashboard(sessions: readonly Session[]): string {
+  const totals = summarise(sessions)
+  const agents = byAgent(sessions)
+
+  const agentRows = [...agents.entries()]
+    .map(([agent, list]) => ({ label: agent.toUpperCase(), value: averageStatic(list).total }))
+    .filter(r => r.value > 0)
+    .sort((a, b) => b.value - a.value)
+
+  const toolRows = totals.topTools.slice(0, 12).map(t => ({ label: t.name.toUpperCase(), value: t.calls }))
+
+  const headline = headlineCard(sessions, `全部记录 · ${totals.sessions} 个会话`)
 
   const perAgent = agentRows.length === 0 ? '' : `<div class="card wide">
   <h2>各 agent 开口前先背了多少</h2>
@@ -258,33 +408,19 @@ export function renderDashboard(sessions: readonly Session[]): string {
   <div class="src">工具调用 · 取自会话记录</div>
 </div>`
 
-  const traces = sessions.slice(-4).map(session => {
-    const t = summarise([session])
-    const where = session.cwd === undefined ? '' : ` · ${esc(session.cwd.split('/').slice(-2).join('/'))}`
-    const branch = session.gitBranch === undefined ? '' : ` · ${esc(session.gitBranch)}`
-    const when = session.startedAt > 0
-      ? new Date(session.startedAt).toISOString().slice(0, 16).replace('T', ' ')
-      : ''
-    return `<div class="card wide">
+  // Newest first, across agents. Read order is the one thing a single file can
+  // offer instead of navigation, so the session you just finished is on top.
+  const ordered = [...sessions].sort((a, b) => b.startedAt - a.startedAt)
+
+  const traces = ordered.map(session => `<div class="card wide">
   <h2>会话 ${esc(session.id.slice(0, 8))}</h2>
-  <div class="sub">${esc(session.agent)}${session.agentVersion === undefined ? '' : ` ${esc(session.agentVersion)}`} · ${when} · ${t.steps} 步 · ${t.toolCalls} 次工具调用 · 模型耗时 ${(t.modelMs / 1000).toFixed(1)}s${where}${branch}</div>
+  <div class="sub">${sessionSub(session)}</div>
   ${trajectory(session)}
   <div class="src">轨迹 · 一根发丝线 = 一步</div>
 </div>
-${session.events === undefined ? '' : `<div class="ledger">${ledger(session.events)}</div>`}`
-  }).join('\n')
+${session.events === undefined ? '' : `<div class="ledger">${ledger(session.events)}</div>`}`).join('\n')
 
-  return `<!doctype html>
-<html lang="zh-CN">
-<head>
-<meta charset="utf-8"/>
-<meta name="viewport" content="width=device-width,initial-scale=1"/>
-<title>Agent Ledger — 你的 agent 到底做了什么</title>
-<style>${STYLE}</style>
-</head>
-<body>
-<div class="wrap">
-<div class="lede">
+  return page('Agent Ledger — 你的 agent 到底做了什么', `<div class="lede">
   <h1>你的 agent 到底做了什么</h1>
   <p>数据来自 Claude Code 与 Codex 自己写在本机的会话记录。每一个数字都对应一次真实请求：
      开口前先背了什么、回来了什么、花了多久、动用了哪些工具。全程只读本地文件，不上传任何内容。</p>
@@ -293,9 +429,5 @@ ${session.events === undefined ? '' : `<div class="ledger">${ledger(session.even
 ${headline}
 ${perAgent}
 ${tools}
-${traces}
-</div>
-</body>
-</html>
-`
+${traces}`)
 }

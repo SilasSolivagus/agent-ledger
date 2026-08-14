@@ -33,12 +33,39 @@ async function walk(dir: string, ext: string, out: string[] = []): Promise<strin
   return out
 }
 
-/** Newest files first, so "recent sessions" is cheap to answer. */
-async function newestFirst(paths: readonly string[], limit: number): Promise<string[]> {
-  const stamped = await Promise.all(paths.map(async path => {
-    try { return { path, at: (await stat(path)).mtimeMs } } catch { return { path, at: 0 } }
+/** A transcript on disk, before anything has been read out of it. */
+export interface TranscriptFile {
+  path: string
+  agent: 'claude-code' | 'codex'
+  /** Stable identity, derived from the filename; what a URL can carry. */
+  id: string
+  mtimeMs: number
+}
+
+/** The id a session gets: the filename, minus the parts that are packaging. */
+function idFor(path: string, agent: TranscriptFile['agent']): string {
+  const base = path.split('/').pop() ?? path
+  return agent === 'codex' ? base.replace(/^rollout-|\.jsonl$/g, '') : base.replace('.jsonl', '')
+}
+
+/**
+ * Every transcript under a root, stamped but unread.
+ *
+ * Stat is three orders of magnitude cheaper than parse — a thousand files cost
+ * milliseconds here and seconds there — so listing and reading stay separate.
+ */
+async function filesIn(root: string, agent: TranscriptFile['agent']): Promise<TranscriptFile[]> {
+  if (!existsSync(root)) return []
+  const paths = await walk(root, '.jsonl')
+  return await Promise.all(paths.map(async path => {
+    let mtimeMs = 0
+    try { mtimeMs = (await stat(path)).mtimeMs } catch { /* vanished mid-walk */ }
+    return { path, agent, id: idFor(path, agent), mtimeMs }
   }))
-  return stamped.sort((a, b) => b.at - a.at).slice(0, limit).map(s => s.path)
+}
+
+function newestFirst(files: readonly TranscriptFile[], limit: number): TranscriptFile[] {
+  return [...files].sort((a, b) => b.mtimeMs - a.mtimeMs).slice(0, limit)
 }
 
 /** Parse a JSONL file into objects, skipping anything malformed. */
@@ -102,226 +129,272 @@ export const CLAUDE_ROOT = join(homedir(), '.claude', 'projects')
 export const CODEX_ROOT = join(homedir(), '.codex', 'sessions')
 
 /**
- * Read Claude Code transcripts into sessions.
+ * Read one Claude Code transcript into a session.
  *
  * One `assistant` record is one step: it carries the model, the reported
  * usage, a timestamp, and the tool calls that request produced.
+ * @param file - the transcript to read.
+ * @returns the session, or undefined when the file held no steps.
+ */
+export async function parseClaudeFile(file: TranscriptFile): Promise<Session | undefined> {
+  let text: string
+  try { text = await readFile(file.path, 'utf8') } catch { return undefined }
+  const steps: Step[] = []
+  const events: LedgerEvent[] = []
+  let version: string | undefined
+  let cwd: string | undefined
+  let gitBranch: string | undefined
+  let startedAt = 0
+  let previousAt = 0
+  let turn = 0
+  // Tool results arrive on the NEXT user record, so a pending index lets the
+  // call keep its own row and gain a result rather than spawning a stray one.
+  const awaiting = new Map<string, number>()
+
+  for (const row of rows(text)) {
+    if (typeof row['version'] === 'string') version ??= row['version']
+    if (typeof row['cwd'] === 'string') cwd ??= row['cwd']
+    if (typeof row['gitBranch'] === 'string' && row['gitBranch'] !== '') gitBranch ??= row['gitBranch']
+    const at = typeof row['timestamp'] === 'string' ? Date.parse(row['timestamp']) : 0
+    if (at > 0 && startedAt === 0) startedAt = at
+
+    if (row['type'] === 'user') {
+      const userMessage = asRecord(row['message'])
+      const content = userMessage?.['content']
+      // A user record carrying tool_result is the harness returning output,
+      // not a person typing; attach it to the call that is waiting.
+      const results = Array.isArray(content)
+        ? content.filter(b => asRecord(b)?.['type'] === 'tool_result')
+        : []
+      if (results.length > 0) {
+        for (const block of results) {
+          const record = asRecord(block)
+          const id = typeof record?.['tool_use_id'] === 'string' ? record['tool_use_id'] : ''
+          const at2 = awaiting.get(id)
+          const target = at2 === undefined ? undefined : events[at2]
+          if (target !== undefined) target.result = summarise(record?.['content'], 90)
+          awaiting.delete(id)
+        }
+        continue
+      }
+      const said = summarise(content)
+      if (said === '') continue
+      turn += 1
+      events.push({ kind: 'user', at, turn, text: said })
+      continue
+    }
+
+    if (row['type'] === 'system') {
+      const said = summarise(row['content'] ?? row['message'], 120)
+      if (said !== '') events.push({ kind: 'context', at, turn: Math.max(1, turn), text: said })
+      continue
+    }
+
+    if (row['type'] !== 'assistant') continue
+
+    const message = asRecord(row['message'])
+    const rawUsage = asRecord(message?.['usage'])
+    if (message === undefined) continue
+
+    const usage: Usage | undefined = rawUsage === undefined ? undefined : {
+      input: numberAt(rawUsage, 'input_tokens'),
+      output: numberAt(rawUsage, 'output_tokens'),
+      cacheRead: numberAt(rawUsage, 'cache_read_input_tokens'),
+      cacheWrite: numberAt(rawUsage, 'cache_creation_input_tokens'),
+    }
+
+    const content = Array.isArray(message['content']) ? message['content'] : []
+    const said = summarise(content)
+    if (said !== '') {
+      events.push({ kind: 'assistant', at, turn: Math.max(1, turn), text: said })
+    }
+    for (const block of content) {
+      const record = asRecord(block)
+      if (record?.['type'] !== 'tool_use') continue
+      const name = typeof record['name'] === 'string' ? record['name'] : 'unknown'
+      events.push({
+        kind: 'tool', at, turn: Math.max(1, turn), tool: name,
+        text: toolArgSummary(name, record['input']),
+      })
+      const id = record['id']
+      if (typeof id === 'string') awaiting.set(id, events.length - 1)
+    }
+    const calls: ToolCall[] = content.flatMap((block: unknown) => {
+      const record = asRecord(block)
+      if (record?.['type'] !== 'tool_use') return []
+      return [{
+        name: typeof record['name'] === 'string' ? record['name'] : 'unknown',
+        argBytes: estimateTokens(JSON.stringify(record['input'] ?? {})),
+      }]
+    })
+
+    const step: Step = {
+      index: steps.length,
+      startedAt: at,
+      model: typeof message['model'] === 'string' ? message['model'] : 'unknown',
+      wire: 'anthropic-messages',
+      // Transcripts do not record the request envelope, so the static
+      // payload is unknown here. The proxy is what fills this in.
+      staticTokens: { prompt: 0, tools: 0 },
+      toolCount: 0,
+      historyLength: steps.length,
+      calls,
+    }
+    // Gap since the previous record is the closest honest stand-in for how
+    // long this step took; the transcript records no explicit duration.
+    if (previousAt > 0 && at > previousAt) step.durationMs = at - previousAt
+    if (usage !== undefined) step.usage = usage
+    steps.push(step)
+    previousAt = at
+  }
+
+  if (steps.length === 0) return undefined
+  const session: Session = {
+    id: file.id,
+    agent: 'claude-code',
+    startedAt: startedAt || (steps[0]?.startedAt ?? 0),
+    steps,
+  }
+  if (version !== undefined) session.agentVersion = version
+  if (cwd !== undefined) session.cwd = cwd
+  if (gitBranch !== undefined) session.gitBranch = gitBranch
+  if (events.length > 0) session.events = events
+  return session
+}
+
+/**
+ * Read Claude Code transcripts into sessions.
  * @param limit - how many recent session files to read.
  * @param root - transcript root; defaults to the standard location.
  * @returns sessions, newest file first.
  */
 export async function readClaudeSessions(limit = 40, root = CLAUDE_ROOT): Promise<Session[]> {
-  if (!existsSync(root)) return []
-  const files = await newestFirst(await walk(root, '.jsonl'), limit)
+  const files = newestFirst(await filesIn(root, 'claude-code'), limit)
   const sessions: Session[] = []
-
   for (const file of files) {
-    let text: string
-    try { text = await readFile(file, 'utf8') } catch { continue }
-    const steps: Step[] = []
-    const events: LedgerEvent[] = []
-    let version: string | undefined
-    let cwd: string | undefined
-    let gitBranch: string | undefined
-    let startedAt = 0
-    let previousAt = 0
-    let turn = 0
-    // Tool results arrive on the NEXT user record, so a pending index lets the
-    // call keep its own row and gain a result rather than spawning a stray one.
-    const awaiting = new Map<string, number>()
-
-    for (const row of rows(text)) {
-      if (typeof row['version'] === 'string') version ??= row['version']
-      if (typeof row['cwd'] === 'string') cwd ??= row['cwd']
-      if (typeof row['gitBranch'] === 'string' && row['gitBranch'] !== '') gitBranch ??= row['gitBranch']
-      const at = typeof row['timestamp'] === 'string' ? Date.parse(row['timestamp']) : 0
-      if (at > 0 && startedAt === 0) startedAt = at
-
-      if (row['type'] === 'user') {
-        const userMessage = asRecord(row['message'])
-        const content = userMessage?.['content']
-        // A user record carrying tool_result is the harness returning output,
-        // not a person typing; attach it to the call that is waiting.
-        const results = Array.isArray(content)
-          ? content.filter(b => asRecord(b)?.['type'] === 'tool_result')
-          : []
-        if (results.length > 0) {
-          for (const block of results) {
-            const record = asRecord(block)
-            const id = typeof record?.['tool_use_id'] === 'string' ? record['tool_use_id'] : ''
-            const at2 = awaiting.get(id)
-            const target = at2 === undefined ? undefined : events[at2]
-            if (target !== undefined) target.result = summarise(record?.['content'], 90)
-            awaiting.delete(id)
-          }
-          continue
-        }
-        const said = summarise(content)
-        if (said === '') continue
-        turn += 1
-        events.push({ kind: 'user', at, turn, text: said })
-        continue
-      }
-
-      if (row['type'] === 'system') {
-        const said = summarise(row['content'] ?? row['message'], 120)
-        if (said !== '') events.push({ kind: 'context', at, turn: Math.max(1, turn), text: said })
-        continue
-      }
-
-      if (row['type'] !== 'assistant') continue
-
-      const message = asRecord(row['message'])
-      const rawUsage = asRecord(message?.['usage'])
-      if (message === undefined) continue
-
-      const usage: Usage | undefined = rawUsage === undefined ? undefined : {
-        input: numberAt(rawUsage, 'input_tokens'),
-        output: numberAt(rawUsage, 'output_tokens'),
-        cacheRead: numberAt(rawUsage, 'cache_read_input_tokens'),
-        cacheWrite: numberAt(rawUsage, 'cache_creation_input_tokens'),
-      }
-
-      const content = Array.isArray(message['content']) ? message['content'] : []
-      const said = summarise(content)
-      if (said !== '') {
-        events.push({ kind: 'assistant', at, turn: Math.max(1, turn), text: said })
-      }
-      for (const block of content) {
-        const record = asRecord(block)
-        if (record?.['type'] !== 'tool_use') continue
-        const name = typeof record['name'] === 'string' ? record['name'] : 'unknown'
-        events.push({
-          kind: 'tool', at, turn: Math.max(1, turn), tool: name,
-          text: toolArgSummary(name, record['input']),
-        })
-        const id = record['id']
-        if (typeof id === 'string') awaiting.set(id, events.length - 1)
-      }
-      const calls: ToolCall[] = content.flatMap((block: unknown) => {
-        const record = asRecord(block)
-        if (record?.['type'] !== 'tool_use') return []
-        return [{
-          name: typeof record['name'] === 'string' ? record['name'] : 'unknown',
-          argBytes: estimateTokens(JSON.stringify(record['input'] ?? {})),
-        }]
-      })
-
-      const step: Step = {
-        index: steps.length,
-        startedAt: at,
-        model: typeof message['model'] === 'string' ? message['model'] : 'unknown',
-        wire: 'anthropic-messages',
-        // Transcripts do not record the request envelope, so the static
-        // payload is unknown here. The proxy is what fills this in.
-        staticTokens: { prompt: 0, tools: 0 },
-        toolCount: 0,
-        historyLength: steps.length,
-        calls,
-      }
-      // Gap since the previous record is the closest honest stand-in for how
-      // long this step took; the transcript records no explicit duration.
-      if (previousAt > 0 && at > previousAt) step.durationMs = at - previousAt
-      if (usage !== undefined) step.usage = usage
-      steps.push(step)
-      previousAt = at
-    }
-
-    if (steps.length === 0) continue
-    const session: Session = {
-      id: file.split('/').pop()?.replace('.jsonl', '') ?? file,
-      agent: 'claude-code',
-      startedAt: startedAt || (steps[0]?.startedAt ?? 0),
-      steps,
-    }
-    if (version !== undefined) session.agentVersion = version
-    if (cwd !== undefined) session.cwd = cwd
-    if (gitBranch !== undefined) session.gitBranch = gitBranch
-    if (events.length > 0) session.events = events
-    sessions.push(session)
+    const session = await parseClaudeFile(file)
+    if (session !== undefined) sessions.push(session)
   }
   return sessions
 }
 
 /**
- * Read Codex rollouts into sessions.
+ * Read one Codex rollout into a session.
  *
  * Codex reports usage cumulatively, so each `token_count` frame carries both
  * the running total and the last call's own figures; the latter is what maps
  * onto a step.
+ * @param file - the rollout to read.
+ * @returns the session, or undefined when the file held no steps.
+ */
+export async function parseCodexFile(file: TranscriptFile): Promise<Session | undefined> {
+  let text: string
+  try { text = await readFile(file.path, 'utf8') } catch { return undefined }
+  const steps: Step[] = []
+  let startedAt = 0
+  let previousAt = 0
+  let pendingCalls: ToolCall[] = []
+  let model = 'unknown'
+
+  for (const row of rows(text)) {
+    const payload = asRecord(row['payload'])
+    const kind = typeof payload?.['type'] === 'string' ? payload['type'] : ''
+    const at = typeof row['timestamp'] === 'string' ? Date.parse(row['timestamp']) : 0
+    if (at > 0 && startedAt === 0) startedAt = at
+
+    if (kind === 'session_meta' || kind === 'turn_context') {
+      const candidate = payload?.['model']
+      if (typeof candidate === 'string') model = candidate
+      continue
+    }
+    // Tool calls arrive as their own frames and belong to the step that the
+    // next usage frame closes.
+    if (kind === 'function_call' || kind === 'mcp_tool_call_end' || kind === 'web_search_call') {
+      pendingCalls.push({
+        name: typeof payload?.['name'] === 'string' ? payload['name'] : kind,
+        argBytes: estimateTokens(typeof payload?.['arguments'] === 'string' ? payload['arguments'] : ''),
+      })
+      continue
+    }
+    if (kind !== 'token_count') continue
+
+    const last = asRecord(asRecord(payload?.['info'])?.['last_token_usage'])
+    if (last === undefined) continue
+    const step: Step = {
+      index: steps.length,
+      startedAt: at,
+      model,
+      wire: 'openai-responses',
+      staticTokens: { prompt: 0, tools: 0 },
+      toolCount: 0,
+      historyLength: steps.length,
+      usage: {
+        input: numberAt(last, 'input_tokens'),
+        output: numberAt(last, 'output_tokens'),
+        cacheRead: numberAt(last, 'cached_input_tokens'),
+        cacheWrite: 0,
+      },
+      calls: pendingCalls,
+    }
+    if (previousAt > 0 && at > previousAt) step.durationMs = at - previousAt
+    steps.push(step)
+    pendingCalls = []
+    previousAt = at
+  }
+
+  if (steps.length === 0) return undefined
+  return {
+    id: file.id,
+    agent: 'codex',
+    startedAt: startedAt || (steps[0]?.startedAt ?? 0),
+    steps,
+  }
+}
+
+/**
+ * Read Codex rollouts into sessions.
  * @param limit - how many recent rollout files to read.
  * @param root - rollout root; defaults to the standard location.
  * @returns sessions, newest file first.
  */
 export async function readCodexSessions(limit = 40, root = CODEX_ROOT): Promise<Session[]> {
-  if (!existsSync(root)) return []
-  const files = await newestFirst(await walk(root, '.jsonl'), limit)
+  const files = newestFirst(await filesIn(root, 'codex'), limit)
   const sessions: Session[] = []
-
   for (const file of files) {
-    let text: string
-    try { text = await readFile(file, 'utf8') } catch { continue }
-    const steps: Step[] = []
-    let startedAt = 0
-    let previousAt = 0
-    let pendingCalls: ToolCall[] = []
-    let model = 'unknown'
-
-    for (const row of rows(text)) {
-      const payload = asRecord(row['payload'])
-      const kind = typeof payload?.['type'] === 'string' ? payload['type'] : ''
-      const at = typeof row['timestamp'] === 'string' ? Date.parse(row['timestamp']) : 0
-      if (at > 0 && startedAt === 0) startedAt = at
-
-      if (kind === 'session_meta' || kind === 'turn_context') {
-        const candidate = payload?.['model']
-        if (typeof candidate === 'string') model = candidate
-        continue
-      }
-      // Tool calls arrive as their own frames and belong to the step that the
-      // next usage frame closes.
-      if (kind === 'function_call' || kind === 'mcp_tool_call_end' || kind === 'web_search_call') {
-        pendingCalls.push({
-          name: typeof payload?.['name'] === 'string' ? payload['name'] : kind,
-          argBytes: estimateTokens(typeof payload?.['arguments'] === 'string' ? payload['arguments'] : ''),
-        })
-        continue
-      }
-      if (kind !== 'token_count') continue
-
-      const last = asRecord(asRecord(payload?.['info'])?.['last_token_usage'])
-      if (last === undefined) continue
-      const step: Step = {
-        index: steps.length,
-        startedAt: at,
-        model,
-        wire: 'openai-responses',
-        staticTokens: { prompt: 0, tools: 0 },
-        toolCount: 0,
-        historyLength: steps.length,
-        usage: {
-          input: numberAt(last, 'input_tokens'),
-          output: numberAt(last, 'output_tokens'),
-          cacheRead: numberAt(last, 'cached_input_tokens'),
-          cacheWrite: 0,
-        },
-        calls: pendingCalls,
-      }
-      if (previousAt > 0 && at > previousAt) step.durationMs = at - previousAt
-      steps.push(step)
-      pendingCalls = []
-      previousAt = at
-    }
-
-    if (steps.length === 0) continue
-    sessions.push({
-      id: file.split('/').pop()?.replace(/^rollout-|\.jsonl$/g, '') ?? file,
-      agent: 'codex',
-      startedAt: startedAt || (steps[0]?.startedAt ?? 0),
-      steps,
-    })
+    const session = await parseCodexFile(file)
+    if (session !== undefined) sessions.push(session)
   }
   return sessions
+}
+
+/**
+ * Every transcript this machine has, newest first, unread.
+ *
+ * The list is what an index page needs; the parse is what a session page
+ * needs. Keeping them apart is what lets a thousand sessions be listed
+ * without a gigabyte being read.
+ * @param limit - how many recent files to return, across all agents.
+ * @param roots - transcript roots; defaults to the standard locations.
+ * @returns files, newest first.
+ */
+export async function listTranscripts(
+  limit = 40,
+  roots: { claude?: string; codex?: string } = {},
+): Promise<TranscriptFile[]> {
+  const [claude, codex] = await Promise.all([
+    filesIn(roots.claude ?? CLAUDE_ROOT, 'claude-code'),
+    filesIn(roots.codex ?? CODEX_ROOT, 'codex'),
+  ])
+  return newestFirst([...claude, ...codex], limit)
+}
+
+/**
+ * Read one listed transcript, whichever agent wrote it.
+ * @param file - a file from {@link listTranscripts}.
+ * @returns the session, or undefined when the file held no steps.
+ */
+export async function readTranscript(file: TranscriptFile): Promise<Session | undefined> {
+  return file.agent === 'codex' ? await parseCodexFile(file) : await parseClaudeFile(file)
 }
 
 /**

@@ -52,7 +52,7 @@ export function summarise(sessions: readonly Session[]): Totals {
     // their sum — not over `input` alone, which excludes them.
     cacheHitRate: input + cacheRead === 0 ? 0 : cacheRead / (input + cacheRead),
     medianTtftMs: median(steps.map(s => s.ttftMs).filter((v): v is number => v !== undefined)),
-    modelMs: steps.reduce((t, s) => t + (s.durationMs ?? 0), 0),
+    spanMs: steps.reduce((t, s) => t + (s.durationMs ?? 0), 0),
     topTools: [...counts.entries()]
       .map(([name, calls]) => ({ name, calls }))
       .sort((a, b) => b.calls - a.calls || (a.name < b.name ? -1 : 1)),
