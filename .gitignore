@@ -1,0 +1,9 @@
+node_modules/
+lib/
+*.tsbuildinfo
+
+# Generated reports contain real session content — commands, file paths,
+# prompts, model reasoning. They are yours to read locally and must never be
+# committed to a public repository.
+examples/*.html
+*.local.html

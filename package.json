@@ -1,0 +1,19 @@
+{
+  "name": "agent-ledger",
+  "version": "0.1.0",
+  "description": "See what your coding agent actually did — session trajectory and cost dashboard for Claude Code, Codex, and any agent that talks HTTP",
+  "keywords": ["claude-code", "codex", "agent", "observability", "tokens", "trajectory"],
+  "type": "module",
+  "main": "lib/index.js",
+  "types": "lib/index.d.ts",
+  "exports": { ".": { "types": "./lib/index.d.ts", "default": "./lib/index.js" } },
+  "bin": { "agent-ledger": "bin/agent-ledger.js" },
+  "files": ["lib/**/*.js", "lib/**/*.d.ts", "bin/*.js"],
+  "license": "MIT",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "node --test tests/*.test.js",
+    "check": "pnpm run build && pnpm run test"
+  },
+  "devDependencies": { "@types/node": "^26.2.0", "typescript": "^5.7.0" }
+}
