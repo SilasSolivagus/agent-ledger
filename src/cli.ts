@@ -25,6 +25,7 @@ export const USAGE = `agent-ledger — see what your coding agent actually did
 Usage:
   agent-ledger serve [--port <n>] [--limit <n>] [--no-open] [--redact]
         open one address that stays; refresh to see the session you are in
+        --limit is per agent, so a quiet one never falls off the page
 
   agent-ledger report [--out <file>] [--limit <n>]
         read what Claude Code and Codex already wrote down, and render it

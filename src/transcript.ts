@@ -85,7 +85,12 @@ function asRecord(value: unknown): Record<string, unknown> | undefined {
   return typeof value === 'object' && value !== null ? value as Record<string, unknown> : undefined
 }
 
-/** Flatten a message's content blocks into one short readable line. */
+/**
+ * Flatten a message's content blocks into one short readable line.
+ *
+ * Anthropic calls its text blocks `text`; OpenAI Responses calls them
+ * `input_text` and `output_text`. Same sentence, three names.
+ */
 function summarise(content: unknown, limit = 160): string {
   if (typeof content === 'string') return content.replace(/\s+/g, ' ').trim().slice(0, limit)
   if (!Array.isArray(content)) return ''
@@ -94,8 +99,10 @@ function summarise(content: unknown, limit = 160): string {
     const record = asRecord(block)
     if (record === undefined) continue
     const type = record['type']
-    if (type === 'text' && typeof record['text'] === 'string') parts.push(record['text'])
+    if ((type === 'text' || type === 'input_text' || type === 'output_text')
+      && typeof record['text'] === 'string') parts.push(record['text'])
     else if (type === 'thinking') parts.push('（思考）')
+    else if (type === 'input_image') parts.push('（图片）')
     else if (type === 'tool_result') {
       const inner = record['content']
       parts.push(typeof inner === 'string' ? inner : summarise(inner, limit))
@@ -104,11 +111,26 @@ function summarise(content: unknown, limit = 160): string {
   return parts.join(' ').replace(/\s+/g, ' ').trim().slice(0, limit)
 }
 
+/** One line of what a tool returned. */
+function resultSummary(output: unknown, limit = 90): string {
+  if (typeof output !== 'string') return summarise(output, limit)
+  // apply_patch wraps its result in JSON; the readable half is inside.
+  if (output.startsWith('{')) {
+    try {
+      const inner = asRecord(JSON.parse(output))?.['output']
+      if (typeof inner === 'string') return inner.replace(/\s+/g, ' ').trim().slice(0, limit)
+    } catch { /* not JSON after all */ }
+  }
+  return output.replace(/\s+/g, ' ').trim().slice(0, limit)
+}
+
 /** Condense tool arguments to the one field a reader actually scans for. */
 function toolArgSummary(name: string, input: unknown, limit = 120): string {
   const record = asRecord(input)
   if (record === undefined) return ''
-  for (const key of ['command', 'file_path', 'path', 'pattern', 'query', 'url', 'prompt', 'description']) {
+  // `cmd` is Codex's name for what Claude Code calls `command`; without it the
+  // most common tool call in a Codex session reads as "cmd, workdir".
+  for (const key of ['command', 'cmd', 'file_path', 'path', 'pattern', 'query', 'url', 'prompt', 'description']) {
     const value = record[key]
     if (typeof value === 'string' && value.trim() !== '') {
       return `${key}: ${value.replace(/\s+/g, ' ').trim().slice(0, limit)}`
@@ -291,31 +313,101 @@ export async function parseCodexFile(file: TranscriptFile): Promise<Session | un
   let text: string
   try { text = await readFile(file.path, 'utf8') } catch { return undefined }
   const steps: Step[] = []
+  const events: LedgerEvent[] = []
   let startedAt = 0
   let previousAt = 0
   let pendingCalls: ToolCall[] = []
   let model = 'unknown'
+  let version: string | undefined
+  let cwd: string | undefined
+  let gitBranch: string | undefined
+  let turn = 0
+  // Outputs arrive as their own frames further down, keyed by call_id.
+  const awaiting = new Map<string, number>()
 
   for (const row of rows(text)) {
     const payload = asRecord(row['payload'])
+    // Codex nests a `type` inside the payload for most frames — but not for
+    // session_meta and turn_context, which put their fields straight on the
+    // payload. Reading only the inner type silently loses both.
+    const top = typeof row['type'] === 'string' ? row['type'] : ''
     const kind = typeof payload?.['type'] === 'string' ? payload['type'] : ''
     const at = typeof row['timestamp'] === 'string' ? Date.parse(row['timestamp']) : 0
     if (at > 0 && startedAt === 0) startedAt = at
 
-    if (kind === 'session_meta' || kind === 'turn_context') {
+    if (top === 'session_meta') {
+      if (typeof payload?.['cwd'] === 'string') cwd ??= payload['cwd']
+      if (typeof payload?.['cli_version'] === 'string') version ??= payload['cli_version']
+      const branch = asRecord(payload?.['git'])?.['branch']
+      if (typeof branch === 'string' && branch !== '') gitBranch ??= branch
+      continue
+    }
+    if (top === 'turn_context') {
       const candidate = payload?.['model']
       if (typeof candidate === 'string') model = candidate
       continue
     }
-    // Tool calls arrive as their own frames and belong to the step that the
-    // next usage frame closes.
-    if (kind === 'function_call' || kind === 'mcp_tool_call_end' || kind === 'web_search_call') {
-      pendingCalls.push({
-        name: typeof payload?.['name'] === 'string' ? payload['name'] : kind,
-        argBytes: estimateTokens(typeof payload?.['arguments'] === 'string' ? payload['arguments'] : ''),
-      })
+
+    if (kind === 'context_compacted') {
+      events.push({ kind: 'context', at, turn: Math.max(1, turn), text: '上下文被压缩' })
       continue
     }
+
+    // What a person typed, and only that. The conversation Codex sends to the
+    // model also holds `role: 'user'` records the harness wrote itself —
+    // AGENTS.md preambles, <environment_context> blocks, liveness pings — and
+    // counting those as turns inflates every per-turn figure. This event is
+    // emitted when a human presses enter, in every CLI version seen so far.
+    if (kind === 'user_message') {
+      const said = typeof payload?.['message'] === 'string'
+        ? payload['message'].replace(/\s+/g, ' ').trim().slice(0, 160)
+        : ''
+      if (said === '') continue
+      turn += 1
+      events.push({ kind: 'user', at, turn, text: said })
+      continue
+    }
+
+    if (kind === 'message' && payload?.['role'] === 'assistant') {
+      const said = summarise(payload['content'])
+      if (said !== '') events.push({ kind: 'assistant', at, turn: Math.max(1, turn), text: said })
+      continue
+    }
+
+    // Tool calls arrive as their own frames and belong to the step that the
+    // next usage frame closes.
+    if (kind === 'function_call' || kind === 'custom_tool_call'
+      || kind === 'mcp_tool_call_end' || kind === 'web_search_call') {
+      const name = typeof payload?.['name'] === 'string' ? payload['name'] : kind
+      // `function_call` serialises arguments as JSON; `custom_tool_call` sends
+      // a raw body — apply_patch's is the patch itself.
+      const args = payload?.['arguments']
+      const body = payload?.['input']
+      pendingCalls.push({
+        name,
+        argBytes: estimateTokens(typeof args === 'string' ? args : typeof body === 'string' ? body : ''),
+      })
+      let what = ''
+      if (typeof args === 'string') {
+        try { what = toolArgSummary(name, JSON.parse(args)) } catch { /* keep it blank */ }
+      } else if (typeof body === 'string') {
+        what = body.split('\n').find(line => line.trim() !== '')?.slice(0, 120) ?? ''
+      }
+      events.push({ kind: 'tool', at, turn: Math.max(1, turn), tool: name, text: what })
+      const id = payload?.['call_id']
+      if (typeof id === 'string') awaiting.set(id, events.length - 1)
+      continue
+    }
+
+    if (kind === 'function_call_output' || kind === 'custom_tool_call_output') {
+      const id = payload?.['call_id']
+      const seat = typeof id === 'string' ? awaiting.get(id) : undefined
+      const target = seat === undefined ? undefined : events[seat]
+      if (target !== undefined) target.result = resultSummary(payload?.['output'])
+      if (typeof id === 'string') awaiting.delete(id)
+      continue
+    }
+
     if (kind !== 'token_count') continue
 
     const last = asRecord(asRecord(payload?.['info'])?.['last_token_usage'])
@@ -329,7 +421,11 @@ export async function parseCodexFile(file: TranscriptFile): Promise<Session | un
       toolCount: 0,
       historyLength: steps.length,
       usage: {
-        input: numberAt(last, 'input_tokens'),
+        // OpenAI counts cached tokens inside `input_tokens`; Anthropic counts
+        // them beside it, and the neutral model follows Anthropic. Reporting
+        // the raw figure here would count Codex's cached context twice and
+        // put its cache hit rate on a different scale from Claude Code's.
+        input: Math.max(0, numberAt(last, 'input_tokens') - numberAt(last, 'cached_input_tokens')),
         output: numberAt(last, 'output_tokens'),
         cacheRead: numberAt(last, 'cached_input_tokens'),
         cacheWrite: 0,
@@ -343,12 +439,17 @@ export async function parseCodexFile(file: TranscriptFile): Promise<Session | un
   }
 
   if (steps.length === 0) return undefined
-  return {
+  const session: Session = {
     id: file.id,
     agent: 'codex',
     startedAt: startedAt || (steps[0]?.startedAt ?? 0),
     steps,
   }
+  if (version !== undefined) session.agentVersion = version
+  if (cwd !== undefined) session.cwd = cwd
+  if (gitBranch !== undefined) session.gitBranch = gitBranch
+  if (events.length > 0) session.events = events
+  return session
 }
 
 /**

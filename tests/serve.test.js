@@ -122,6 +122,34 @@ test('an id from a URL never becomes a path', async () => {
   } finally { stop() }
 })
 
+test('a quiet agent still reaches the index when a busy one floods it', async () => {
+  const claude = await mkdtemp(join(tmpdir(), 'agent-ledger-c-'))
+  const codex = await mkdtemp(join(tmpdir(), 'agent-ledger-x-'))
+  // One old Codex rollout against three newer Claude sessions, with room for
+  // two per agent: by mtime alone the Codex one would be pushed off.
+  await writeFile(join(codex, 'rollout-2026-01-01T00-00-00-old.jsonl'), [
+    JSON.stringify({ timestamp: '2026-01-01T00:00:00.000Z', type: 'turn_context', payload: { model: 'gpt-5.4' } }),
+    JSON.stringify({ timestamp: '2026-01-01T00:00:01.000Z', type: 'event_msg', payload: {
+      type: 'token_count', info: { last_token_usage: { input_tokens: 10, output_tokens: 5, cached_input_tokens: 0 } },
+    } }),
+  ].join('\n'), 'utf8')
+  for (const n of ['a', 'b', 'c']) {
+    await writeFile(join(claude, `session-${n}.jsonl`), transcript(`CLAUDE-${n}`), 'utf8')
+  }
+  const server = createLedgerServer({ port: 0, limit: 2, roots: { claude, codex } })
+  const base = await new Promise(resolve => {
+    server.listen(0, '127.0.0.1', () => resolve(`http://127.0.0.1:${server.address().port}`))
+  })
+  try {
+    const { body } = await get(base, '/')
+    assert.match(body, /href="\/s\/2026-01-01T00-00-00-old"/, 'the quiet agent must survive')
+    assert.equal(
+      (body.match(/href="\/s\/session-/g) ?? []).length, 2,
+      'the busy one is capped at the per-agent limit, not unbounded',
+    )
+  } finally { server.close(); server.closeAllConnections() }
+})
+
 test('listTranscripts stats without reading, and keeps the newest first', async () => {
   const { root, stop } = await fixture()
   stop()

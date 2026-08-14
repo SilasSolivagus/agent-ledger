@@ -23,10 +23,12 @@ npx agent-ledger serve
 
 首页是总账加一张会话表，点会话号进去看那一次的轨迹和逐条账本。**列会话不读文件，只有你点开的那个才被解析**，解析完按文件修改时间缓存——所以一千多个会话也开得动，正在写入的那个会自动重读。
 
+`--limit` 是**每个 agent 各算**的，而且数的是真读出来的会话、不是文件。同一个预算按时间排，今天一下午的 Claude Code 就能把上个月的 Codex 全挤下去；按文件数算，Codex 那些开了没用就关的八行空壳会把名额吃光。
+
 其他命令：
 
 ```sh
-agent-ledger serve --port 5000 --limit 100   # 换端口 · 首页读最近 100 个
+agent-ledger serve --port 5000 --limit 100   # 换端口 · 每个 agent 各读最近 100 个
 agent-ledger serve --no-open                 # 不自动开浏览器
 agent-ledger sessions                        # 列出能看到的会话
 agent-ledger report --out ledger.html        # 导出一个自包含 HTML 文件
@@ -42,7 +44,7 @@ agent-ledger report --out ledger.html        # 导出一个自包含 HTML 文件
 
 **每次会话的轨迹**——一根发丝线是一步，圆点大小是这一步的耗时，方块是工具调用。一眼能看出工作集中在哪一段，不用读任何数字。
 
-**逐条事件账本**——你说了什么、模型做了什么、调了哪个工具、拿到什么结果，按轮次分段。你说的话有黑色标记，工具调用有土黄标记，模型的思考退到灰色——**几百行里眼睛知道往哪落**。
+**逐条事件账本**——你说了什么、模型做了什么、调了哪个工具、拿到什么结果，按轮次分段。Claude Code 和 Codex 都有。你说的话有黑色标记，工具调用有土黄标记，模型的思考退到灰色——**几百行里眼睛知道往哪落**。
 
 生成的页面**完全自包含**：没有脚本、没有字体 CDN、没有远程样式表。断网双击照样打开。
 
@@ -67,21 +69,24 @@ agent-ledger report --out ledger.html        # 导出一个自包含 HTML 文件
 诚实清单：
 
 - **没有脱敏模式**。所以现在不能安全地把报告分享出去。
-- **Codex 的账本是空的**。数字（步数、token、工具调用）已经能读，但逐条事件还没做——它的记录结构和 Claude Code 不同。
+- **没有跨 agent 的对比视图**。两家的会话现在都在同一张表里，但「谁办同一件事更省」还得靠你自己一行行看。
 - **没有筛选和搜索**。会话表按时间排，一千多个会话里找特定的那个只能靠肉眼。
 - **「会话跨度」不是模型耗时**。会话记录里没有单步耗时，这个数是相邻两条记录的时间差累加，中间包含工具执行和你去喝咖啡的时间。真的模型耗时要走 `record` 代理才量得到。
-- **固定负载需要代理才能测到**。会话记录里不含请求信封（system prompt + 工具 schema），所以「每次请求固定携带多少」这个数字需要 `agent-ledger record` 走一次代理才有。**注意：Claude Code 的订阅登录态（OAuth）不允许走自定义 base URL，会被服务端拒绝**，这条路只对 API key 用户可用。
+- **固定负载需要代理才能测到**。会话记录里不含请求信封（system prompt + 工具 schema），所以「每次请求固定携带多少」这个数字需要 `agent-ledger record` 走一次代理才有。**注意：Claude Code 的订阅登录态（OAuth）不允许走自定义 base URL，会被服务端拒绝**，这条路只对 API key 用户可用。（例外：Codex 的 rollout 里其实存了 `base_instructions` 全文，只是没有工具 schema，所以只能算出一半——现在没用它，免得和 Claude 侧的完整数字放进同一张图里比。）
 
 ## 开发
 
 ```sh
-pnpm install && pnpm run check   # 构建 + 20 个测试
+pnpm install && pnpm run check   # 构建 + 26 个测试
 ```
 
 代理相关的测试是重点：它站在人和他们付费使用的模型之间，所以「字节原样透传」「我们的 bug 绝不能变成用户的报错」必须被验证，而不是写在注释里。
 
 服务端的重点是另外三条：**URL 里的 id 永远不会变成文件路径**（只在已列出的文件里比对，没有可拼接的东西）、**正在写入的会话必须被重读**（缓存看 mtime）、**解析出错不能把服务带走**。
 
+跨 agent 的口径也必须被测：**OpenAI 把缓存 token 算在 `input_tokens` 里面，Anthropic 算在它旁边**（1514 个真实样本里 `cached ≤ input` 无一例外）。适配器统一换算成「`input` 只含新鲜输入」，否则 Codex 的缓存部分会被数两遍，两家的命中率不在一个尺度上——修之前 Codex 显示 47.9%，修之后 91.9%。
+
+Codex 适配器的测试全都对着它和 Claude Code 不一样的地方：`session_meta` / `turn_context` 的字段直接挂在 payload 上、没有内层 `type`；harness 会以 `role: user` 往对话里塞 AGENTS.md 和 `<environment_context>`，只有 `event_msg/user_message` 才是人真的按了回车；`apply_patch` 发的是原始补丁而不是 JSON 参数；文本块叫 `output_text` 不叫 `text`。这四条每条踩中一次，账本就少一截或者多一截。
 
 ## License
 

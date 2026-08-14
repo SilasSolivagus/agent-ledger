@@ -33,8 +33,14 @@ export interface ServeOptions {
   roots?: { claude?: string; codex?: string }
 }
 
-/** A parsed session, good until the file it came from is written again. */
-interface Cached { mtimeMs: number; session: Session }
+/**
+ * A parsed session, good until the file it came from is written again.
+ *
+ * `session` is absent when the file held no model call at all — an opened and
+ * abandoned window. Remembering that emptiness is what keeps a hundred such
+ * stubs from being re-read on every refresh.
+ */
+interface Cached { mtimeMs: number; session?: Session }
 
 const HTML = { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' } as const
 
@@ -60,7 +66,9 @@ export function createLedgerServer(options: ServeOptions): Server {
     const hit = cache.get(file.path)
     if (hit !== undefined && hit.mtimeMs === file.mtimeMs) return hit.session
     const session = await readTranscript(file)
-    if (session !== undefined) cache.set(file.path, { mtimeMs: file.mtimeMs, session })
+    cache.set(file.path, session === undefined
+      ? { mtimeMs: file.mtimeMs }
+      : { mtimeMs: file.mtimeMs, session })
     return session
   }
 
@@ -76,10 +84,19 @@ export function createLedgerServer(options: ServeOptions): Server {
       const files = await listTranscripts(Infinity, options.roots)
 
       if (path === '/') {
+        // The budget is per agent, and it counts sessions found rather than
+        // files looked at. Both matter: one shared budget hands the whole page
+        // to whichever agent you used today, and counting files means a run of
+        // opened-then-abandoned windows — Codex leaves eight-line stubs —
+        // spends the entire budget on nothing.
         const sessions: Session[] = []
-        for (const file of files.slice(0, options.limit)) {
+        const found = new Map<string, number>()
+        for (const file of files) {
+          if ((found.get(file.agent) ?? 0) >= options.limit) continue
           const session = await load(file)
-          if (session !== undefined) sessions.push(session)
+          if (session === undefined) continue
+          found.set(file.agent, (found.get(file.agent) ?? 0) + 1)
+          sessions.push(session)
         }
         res.writeHead(200, HTML).end(renderIndex(sessions, files.length))
         return

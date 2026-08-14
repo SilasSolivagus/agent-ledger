@@ -17,8 +17,18 @@ export type AgentKind = 'claude-code' | 'codex' | 'dsh' | 'unknown'
 /** The wire dialect a request used. */
 export type Wire = 'anthropic-messages' | 'openai-responses' | 'openai-chat' | 'unknown'
 
-/** Token accounting for one request, as the provider reported it. */
+/**
+ * Token accounting for one request, normalised.
+ *
+ * The two providers disagree about what "input" means: Anthropic reports
+ * `input_tokens` *beside* `cache_read_input_tokens`, OpenAI reports
+ * `cached_input_tokens` *inside* `input_tokens`. Adapters convert to the
+ * Anthropic reading — `input` is fresh input only, never counting anything
+ * already in `cacheRead`. Without that, adding the two together
+ * double-charges one provider and the cache hit rates are not comparable.
+ */
 export interface Usage {
+  /** Input tokens charged fresh. Excludes everything in `cacheRead`. */
   input: number
   output: number
   /** Tokens served from cache — charged differently, but still occupying context. */
