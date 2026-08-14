@@ -10,6 +10,7 @@
 
 import type { LedgerEvent, Session } from './types.js'
 import { summarise, averageStatic, byAgent } from './summary.js'
+import { profiles, type AgentProfile } from './profile.js'
 
 const T = {
   card: '#1b1b19', ink: '#f0efeb', muted: '#8f8e88', faint: '#57574f', rule: '#2b2a26',
@@ -198,6 +199,7 @@ tr.r-user td:nth-child(3){font-weight:600}
 .k-system,.k-context{color:#a3a29a}
 td.res{color:#6b6a63;font-size:11px}
 td.num{font-variant-numeric:tabular-nums;text-align:right;padding-right:14px}
+th.num{text-align:right;padding-right:14px}
 .dim{color:#8f8e88}
 a{color:${T.paperInk};text-decoration:none;border-bottom:1px solid #c9c7bd;
  font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px;font-weight:600}
@@ -309,6 +311,60 @@ function sessionList(sessions: readonly Session[]): string {
     + `</tr></thead><tbody>${rows.join('')}</tbody></table>`
 }
 
+/** One table of per-agent figures: agents down the side, measures across. */
+function profileTable(
+  rows: readonly AgentProfile[],
+  columns: readonly { head: string; of: (p: AgentProfile) => string }[],
+): string {
+  const head = columns.map(c => `<th class="num">${esc(c.head)}</th>`).join('')
+  const body = rows.map(row => `<tr><td class="kind">${esc(row.agent)}</td>`
+    + columns.map(c => `<td class="num">${esc(c.of(row))}</td>`).join('')
+    + '</tr>').join('')
+  return `<table><thead><tr><th style="width:120px">AGENT</th>${head}</tr></thead>`
+    + `<tbody>${body}</tbody></table>`
+}
+
+const pct = (v: number): string => `${(v * 100).toFixed(0)}%`
+const dec = (v: number): string => v.toFixed(2)
+const num = (v: number): string => v.toLocaleString('en-US')
+
+/**
+ * Two agents side by side, with the line between what compares and what does
+ * not drawn on the page rather than left to the reader.
+ */
+function comparison(sessions: readonly Session[]): string {
+  const rows = profiles(sessions)
+  if (rows.length < 2) return ''
+
+  return `<div class="card wide">
+  <h2>两家各自长什么样</h2>
+  <div class="sub">不是排名。会话记录里没有「答得好不好」「活干完没有」「你有没有重问一遍」，
+    所以「谁更强」在这里没有分子——下面只有它们各自怎么干活、各花了多少。</div>
+</div>
+<div class="ledger">
+  ${profileTable(rows, [
+    { head: '一步几个工具', of: p => dec(p.callsPerStep) },
+    { head: '零工具的步', of: p => pct(p.silentStepShare) },
+    { head: '每次调用几步', of: p => dec(p.stepsPerCall) },
+    { head: '参数中位', of: p => num(p.argTokens) },
+    { head: '缓存命中', of: p => pct(p.cacheHitRate) },
+  ])}
+  <div class="src">怎么干活 · 这几个数几乎不随任务大小变，是两家 harness 的设计差异，可以直接比</div>
+</div>
+<div class="ledger">
+  ${profileTable(rows, [
+    { head: '每步上下文', of: p => num(p.contextPerStep) },
+    { head: '每步输出', of: p => num(p.outputPerStep) },
+    { head: '每轮步数', of: p => num(p.stepsPerTurn) },
+    { head: '每轮输出', of: p => num(p.outputPerTurn) },
+    { head: '每轮墙钟', of: p => `${num(p.spanPerTurn)}s` },
+    { head: '轮数', of: p => num(p.turns) },
+  ])}
+  <div class="src">花了多少 · 这几个数几乎全由「你拿它干什么」决定 —— 两家做的活不一样，
+    差异就不是它们的差异。只看，别当结论</div>
+</div>`
+}
+
 /**
  * The index a server hands out: what it all cost, and what there is to open.
  * @param sessions - the sessions that were parsed, newest first.
@@ -344,6 +400,7 @@ export function renderIndex(sessions: readonly Session[], scanned: number): stri
   <div class="meta">本机共 ${scanned} 个会话记录 · 已读最近 ${sessions.length} 个 · ${totals.steps} 步</div>
 </div>
 ${headlineCard(sessions, `最近 ${sessions.length} 个会话 · 本机共 ${scanned} 个`)}
+${comparison(sessions)}
 ${perAgent}
 ${tools}
 <div class="card wide">

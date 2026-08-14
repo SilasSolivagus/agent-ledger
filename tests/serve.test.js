@@ -159,3 +159,39 @@ test('listTranscripts stats without reading, and keeps the newest first', async 
   assert.equal(files[0].id, 'session-newer', 'newest first')
   assert.ok(files.every(f => f.agent === 'claude-code' && f.mtimeMs > 0))
 })
+
+test('the comparison names what it cannot measure, and appears only with two agents', async () => {
+  const { base, stop } = await fixture()
+  try {
+    const alone = await get(base, '/')
+    assert.ok(!/两家各自长什么样/.test(alone.body), 'one agent is not a comparison')
+  } finally { stop() }
+
+  const claude = await mkdtemp(join(tmpdir(), 'agent-ledger-c2-'))
+  const codex = await mkdtemp(join(tmpdir(), 'agent-ledger-x2-'))
+  await writeFile(join(claude, 'session-z.jsonl'), transcript('CLAUDE-Z'), 'utf8')
+  await writeFile(join(codex, 'rollout-2026-01-01T00-00-00-z.jsonl'), [
+    JSON.stringify({ timestamp: '2026-01-01T00:00:00.000Z', type: 'turn_context', payload: { model: 'gpt-5.4' } }),
+    JSON.stringify({ timestamp: '2026-01-01T00:00:01.000Z', type: 'event_msg', payload: { type: 'user_message', message: 'DO-THE-THING' } }),
+    JSON.stringify({ timestamp: '2026-01-01T00:00:02.000Z', type: 'response_item', payload: {
+      type: 'function_call', name: 'exec_command', call_id: 'z1', arguments: JSON.stringify({ cmd: 'ls' }),
+    } }),
+    JSON.stringify({ timestamp: '2026-01-01T00:00:03.000Z', type: 'event_msg', payload: {
+      type: 'token_count',
+      info: { last_token_usage: { input_tokens: 900, output_tokens: 40, cached_input_tokens: 400 } },
+    } }),
+  ].join('\n'), 'utf8')
+  const server = createLedgerServer({ port: 0, limit: 5, roots: { claude, codex } })
+  const base2 = await new Promise(resolve => {
+    server.listen(0, '127.0.0.1', () => resolve(`http://127.0.0.1:${server.address().port}`))
+  })
+  try {
+    const { body } = await get(base2, '/')
+    assert.match(body, /两家各自长什么样/)
+    // The whole point of the card is the disclaimer; a build that renders the
+    // numbers without it would read as a scoreboard, which the data cannot support.
+    assert.match(body, /不是排名/)
+    assert.match(body, /答得好不好/, 'it must say out loud what is unmeasurable')
+    assert.match(body, /只看，别当结论/, 'the task-bound group must be marked as such')
+  } finally { server.close(); server.closeAllConnections() }
+})
