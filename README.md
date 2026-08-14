@@ -9,10 +9,12 @@ Claude Code 和 Codex 都会把每次会话完整写在你本机上，但都没�
 ## 用
 
 ```sh
-npx agent-ledger serve
+npx runledger serve
 ```
 
 浏览器自己会打开。一个地址一直在那儿，刷新就是最新的——包括你此刻正在跑的这个会话。
+
+npm 上叫 **runledger**（`agent-ledger` 被一个同赛道的包挡住了），装完之后命令行是 `agent-ledger`。
 
 不需要配置，不需要 API key，不需要改你 agent 的任何设置。它读的是这两个目录：
 
