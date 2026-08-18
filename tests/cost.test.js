@@ -71,6 +71,15 @@ test('the session total says how many records it could not price', () => {
   assert.match(html, /1 条无价/, 'the hole beside the total is stated, with its size')
 })
 
+test('the money is in the headline row, not six cards down', () => {
+  // It was in the spend card only. The first thing anyone asked of a running
+  // board was "where is the money", which is what burying it looks like.
+  const html = renderDigest(digest('claude-code', [mixed()]))
+  const headline = html.slice(0, html.indexOf('调用耗时分布'))
+  assert.match(headline, /\$0\.18/, 'the figure is above the fold')
+  assert.match(headline, /花费/)
+})
+
 test('the summary states which price tier it used, and when the table was taken', () => {
   const html = renderDigest(digest('claude-code', [mixed()]))
   assert.match(html, /基础档/, 'long-context and priority tiers are not applied')

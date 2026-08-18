@@ -849,6 +849,10 @@ export function renderDigest(d: Digest): string {
     ${fig(n(d.output), '输出 token')}
     ${fig(`${(d.cacheHitRate * 100).toFixed(0)}%`, '缓存命中')}
     ${fig(n(d.errors), '调用失败')}
+    ${// Money leads this row rather than waiting six cards down. It was in the
+      // spend card only, and the first question anyone asked of the board was
+      // "where is the money" — which is the answer to "did I bury it".
+      d.spend.priced === 0 ? fig('—', '花费') : fig(moneyAll(d.spend.totals), '花费')}
   </div>
 </div>`
   return `${headline}
