@@ -214,6 +214,7 @@ export function createLedgerServer(options: ServeOptions, now = Date.now()): Ser
           picked === '' ? undefined : picked,
           paused ? null : refreshSeconds, zoom, compress, source, range,
           capped === 0 ? undefined : { dropped: capped, limit: options.limit },
+          Object.values(sources),
         ))
         return
       }

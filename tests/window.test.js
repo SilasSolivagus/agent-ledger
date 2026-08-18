@@ -194,3 +194,61 @@ test('a board that dropped sessions to stay small says so', async () => {
     assert.match(body, /--limit/, 'and the reader is told which knob changes it')
   } finally { server.close(); server.closeAllConnections() }
 })
+
+test('a machine with no agent at all says so, and says where it looked', async () => {
+  // Every tab is a source that exists on disk. With none, there is no board to
+  // open and no tab to click, so the page has to answer the only question left:
+  // what did you look for, and where.
+  const dir = await mkdtemp(join(tmpdir(), 'agent-ledger-bare-'))
+  const server = createLedgerServer({ port: 0, limit: 40, roots: noSources(dir) }, ms(2))
+  const base = await new Promise(resolve => {
+    server.listen(0, '127.0.0.1', () => resolve(`http://127.0.0.1:${server.address().port}`))
+  })
+  try {
+    const body = await (await fetch(`${base}/`)).text()
+    assert.match(body, /这台机器上没找到 agent/)
+    assert.match(body, /no-claude/, 'the paths it searched are named, so this is diagnosable')
+    assert.match(body, /no-workbuddy/)
+    assert.ok(!/class="atab[ "]/.test(body), 'and there is no tab pretending a source exists')
+  } finally { server.close(); server.closeAllConnections() }
+})
+
+test('the empty board does not repeat what the sidebar already shows', async () => {
+  // It used to restate the window, the instant, the roll-call of watched
+  // sources and their counts — all of which are on screen. The emptiest page
+  // in the product was the wordiest.
+  const { get, stop } = await board()
+  try {
+    const body = await get('/')
+    // The panel only, not the rest of the document that follows it.
+    const panel = body.slice(body.indexOf('class="waiting"'), body.indexOf('</main>'))
+    assert.ok(!/正在监听/.test(panel), 'the tabs are the roll-call')
+    assert.ok(!/自 \d\d:\d\d:\d\d 之后/.test(panel), 'the footer names the instant')
+    assert.ok(panel.length < 700, `the panel stays short, was ${panel.length} chars`)
+    assert.match(panel, /拉宽到「今天」或「全部」/, 'what is left is the next click')
+  } finally { stop() }
+})
+
+test('at the widest window there is no wider window to suggest', async () => {
+  const { get, stop } = await board()
+  try {
+    const body = await get('/?agent=codex&range=all')
+    assert.ok(!/拉宽到/.test(body), 'advice that suggests what you already did is noise')
+  } finally { stop() }
+})
+
+test('with no agent installed the sidebar goes quiet too', async () => {
+  // A summary of nothing, a window picker over nothing, and "this agent has
+  // no activity" when there is no agent — three controls leading nowhere.
+  const dir = await mkdtemp(join(tmpdir(), 'agent-ledger-bare2-'))
+  const server = createLedgerServer({ port: 0, limit: 40, roots: noSources(dir) }, ms(2))
+  const base = await new Promise(resolve => {
+    server.listen(0, '127.0.0.1', () => resolve(`http://127.0.0.1:${server.address().port}`))
+  })
+  try {
+    const body = await (await fetch(`${base}/`)).text()
+    assert.ok(!/总览/.test(body), 'nothing to summarise')
+    assert.ok(!/class="ranges"/.test(body), 'no window worth changing')
+    assert.ok(!/这个 agent/.test(body), 'and no agent for that to name')
+  } finally { server.close(); server.closeAllConnections() }
+})

@@ -78,9 +78,12 @@ test('a machine full of old sessions starts with an empty board', async () => {
   const { get, stop } = await watched(ms(2))
   try {
     const body = await get('/')
-    assert.match(body, /还没有新的会话/, 'empty is the correct answer, not a failure')
+    assert.match(body, /没有活动/, 'empty is the correct answer, not a failure')
     assert.ok(!/OLD-WORK-FROM-BEFORE/.test(body), 'history must not leak onto the board')
-    assert.match(body, /正在监听/, 'and it says what it is waiting for')
+    // What it is watching lives in the tabs, which is why the empty panel no
+    // longer repeats it: every installed source has a tab whether busy or not.
+    assert.match(body, /class="atab[^"]*" href="\?agent=claude-code"/)
+    assert.match(body, /class="atab[^"]*" href="\?agent=codex"/)
     assert.match(body, /http-equiv="refresh"/, 'the board reloads itself')
   } finally { stop() }
 })
@@ -348,9 +351,12 @@ test('clicking a quiet agent stays on it instead of bouncing to a busy one', asy
 
     const codex = await get('/?agent=codex')
     assert.match(codex, /<a class="atab on" href="\?agent=codex"/, 'codex stays selected')
-    assert.match(codex, /OpenAI · Codex 还没有新的会话/, 'and says so by name')
+    assert.match(codex, /OpenAI · Codex 在这个窗口里没有活动/, 'and says so by name')
     assert.ok(!/CLAUDE-IS-BUSY/.test(codex), 'without showing the other agent work')
-    assert.match(codex, /现在有活动的是 Anthropic · Claude Code（1）/, 'and points at where the activity is')
+    // Where the activity is was a sentence in the empty panel and is now the
+    // count in the tab, which was always there and never went stale.
+    assert.match(codex, /agent=claude-code"[\s\S]*?class="count">1</,
+      'the busy agent carries its count on its own tab')
 
     // An unknown value is still a fallback, since it names nothing installed.
     const bogus = await get('/?agent=gemini')

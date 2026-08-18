@@ -545,13 +545,11 @@ function crossVendor(sessions: readonly Session[], since: number): string {
   <h2>各 agent 开口前先背了多少</h2>
   <div class="sub">每次请求的固定负载均值 · 系统提示词 + 工具 schema</div>
   ${tickChart(agentRows, 'TOKEN')}
-  <div class="src">固定负载 · 实测自真实请求</div>
 </div>`
   const tools = toolRows.length === 0 ? '' : `<div class="card wide">
   <h2>哪些工具真的跑了</h2>
   <div class="sub">这个窗口里的调用次数</div>
   ${tickChart(toolRows, '次调用')}
-  <div class="src">工具调用 · 取自会话记录</div>
 </div>`
 
   return `<div class="digesthead"><span class="who">跨厂商对比</span>
@@ -560,6 +558,39 @@ function crossVendor(sessions: readonly Session[], since: number): string {
 ${comparison(sessions)}
 ${payload}
 ${tools}</div>`
+}
+
+/**
+ * Nothing to show, said in as few words as the sidebar leaves room for.
+ *
+ * This used to be a paragraph: which instant the board started at, how to make
+ * something appear, that history was excluded, and a roll-call of what was
+ * being watched with per-agent counts. Every one of those is already on
+ * screen — the window picker names the window, the footer names the instant,
+ * and the tabs are the roll-call, with the counts in them. Restating it made
+ * the emptiest screen in the product the wordiest.
+ *
+ * What is left is the one thing not visible elsewhere: the next click.
+ * @param active - the selected agent, or '' when this machine has none.
+ * @param watching - every installed source.
+ * @param looked - where it looked, shown only when it found nothing at all.
+ * @param range - the current window, so the advice does not suggest itself.
+ */
+function emptyBoard(
+  active: string, watching: readonly string[], looked: readonly string[], range: string,
+): string {
+  if (watching.length === 0) {
+    return `<div class="waiting">
+  <h1>这台机器上没找到 agent</h1>
+  <p>没有任何一个来源的记录目录存在，所以没有板子可开。装上 Claude Code、Codex 或 Cursor 其中之一，
+     或者让 WorkBuddy 建起它的数据库，重启这个命令即可。</p>
+  <p class="dimp">找过这些位置：<br/>${looked.map(one => esc(one)).join('<br/>')}</p>
+</div>`
+  }
+  return `<div class="waiting">
+  <h1>${active === '' ? '这个窗口里还没有活动' : `${esc(agentLabel(active))} 在这个窗口里没有活动`}</h1>
+  ${range === 'all' ? '' : '<p>把窗口拉宽到「今天」或「全部」，看它之前干了什么。</p>'}
+</div>`
 }
 
 export function renderLive(
@@ -575,6 +606,8 @@ export function renderLive(
   range = 'watch',
   /** How many sessions the per-agent budget kept off this board, if any. */
   capped?: { dropped: number; limit: number },
+  /** Every path this machine was searched at, for the found-nothing case. */
+  looked: readonly string[] = [],
 ): string {
   const agents = [...boards.keys()]
   // Every link on this page has to carry the window, or clicking a vendor
@@ -607,14 +640,19 @@ export function renderLive(
     <span class="count">${count === 0 ? '—' : String(count)}</span></a>`
   }).join('')
 
+  // With nothing installed there is no summary to open, no window worth
+  // changing and no agent for "this agent" to refer to. The sidebar goes
+  // quiet rather than offering three controls that all lead nowhere.
+  const bare = watching.length === 0
+
   // The window picker sits under the vendor tabs because it is the same kind
   // of control: which slice of the world this board is about. `watch` is the
   // default and the reason the product exists, so it leads.
-  const windows = `<div class="ranges">${Object.entries(RANGES).map(([key, label]) =>
+  const windows = bare ? '' : `<div class="ranges">${Object.entries(RANGES).map(([key, label]) =>
     `<a href="?agent=${encodeURIComponent(active)}${key === 'watch' ? '' : `&amp;range=${key}`}"${
       key === range ? ' class="on"' : ''}>${esc(label)}</a>`).join('')}</div>`
 
-  const entries = `<a class="entry summary${session === undefined ? ' on' : ''}"
+  const entries = bare ? '' : `<a class="entry summary${session === undefined ? ' on' : ''}"
     href="?agent=${encodeURIComponent(active)}${keepRange}"><span class="etop">
     <span class="ewhere">总览</span></span>
     <span class="emeta">${list.length} 个会话加起来</span></a>`
@@ -633,15 +671,7 @@ export function renderLive(
     ? renderSourceBoard(sourceDetails.filter(d => list.some(one => one.id === d.id)))
     : renderDigest(digest(active, list))}</div>`
     : session === undefined
-    ? `<div class="waiting">
-  <h1>${active === '' ? '还没有新的会话' : `${esc(agentLabel(active))} 还没有新的会话`}</h1>
-  <p>这块板子只显示 <b>${clock(since)}</b> 之后发生的事。${active === '' ? '' : '换这个 agent 开一个新会话，或者在它已开着的会话里说句话——'}
-     下一次刷新就会出现在左边。本机已有的历史记录不在这里显示。</p>
-  <p class="dimp">正在监听：${watching.map(a => esc(agentLabel(a))).join(' · ')}${
-    [...boards.entries()].filter(([, list]) => list.length > 0).length === 0 ? ''
-      : ` · 现在有活动的是 ${[...boards.entries()].filter(([, list]) => list.length > 0)
-        .map(([key, list]) => `${esc(agentLabel(key))}（${list.length}）`).join('、')}`}</p>
-</div>`
+    ? emptyBoard(active, watching, looked, range)
     : `${boardHeading(session)}
 ${trajectoryTable(session, 200, true, true, zoom, compress)}
 ${statusBar(session)}`
@@ -1429,7 +1459,7 @@ export function renderSession(session: Session, zoom = 'mid', compress = true): 
 ${headlineCard([session], '本次会话')}
 <div class="card wide">
   <h2>轨迹</h2>
-  <div class="sub">一行一个操作 · 条的长度是它自己花的时间 · 点开任意一行看全文</div>
+  <div class="sub">点开任意一行看全文</div>
 </div>
 <div class="ledger">${trajectoryTable(session, 600, true, false, zoom, compress)}</div>`
   return page(`会话 ${session.id.slice(0, 12)} — Agent Ledger`, body)
