@@ -593,6 +593,122 @@ export async function readCodexSessions(limit = 40, root = CODEX_ROOT): Promise<
   return sessions
 }
 
+
+/**
+ * Read one Cursor transcript.
+ *
+ * Cursor keeps the least of the three file-based sources. A record is
+ * `{ role, message: { content: [...] } }` and that is all: no timestamp on any
+ * record, and no usage anywhere in the file. Two consequences, both visible in
+ * what this returns rather than papered over.
+ *
+ * There are no steps. A step is a model request with its token accounting, and
+ * nothing here reports one, so inventing steps from assistant records would
+ * put a fabricated denominator under every per-step figure.
+ *
+ * There are no durations, measured or inferred, because inference needs two
+ * timestamps. Events carry `seq` instead, which is what lets a live board tell
+ * new records from old without a clock.
+ *
+ * @param file - the transcript to read.
+ * @param fromByte - skip records that end at or before this offset.
+ * @returns the session, or undefined when nothing readable is left.
+ */
+export async function parseCursorFile(
+  file: TranscriptFile,
+  fromByte = 0,
+): Promise<Session | undefined> {
+  let text: string
+  try { text = await readFile(file.path, 'utf8') } catch { return undefined }
+
+  const events: LedgerEvent[] = []
+  let turn = 0
+  let seq = 0
+  let offset = 0
+  for (const line of text.split('\n')) {
+    const start = offset
+    offset += Buffer.byteLength(line, 'utf8') + 1
+    if (line.trim() === '') continue
+    seq += 1
+    // Position stands in for time: everything that ended inside the baseline
+    // was already there when watching began.
+    if (offset <= fromByte) continue
+    let row: Record<string, unknown>
+    try {
+      const parsed: unknown = JSON.parse(line)
+      if (typeof parsed !== 'object' || parsed === null) continue
+      row = parsed as Record<string, unknown>
+    } catch { continue }
+
+    const message = asRecord(row['message'])
+    const content = message?.['content']
+    const role = row['role']
+    if (!Array.isArray(content)) continue
+
+    if (role === 'user') {
+      const said = summarise(content)
+      if (said === '') continue
+      turn += 1
+      events.push({ kind: 'user', at: 0, turn, text: said, seq, full: detail(content) })
+      continue
+    }
+    if (role !== 'assistant') continue
+
+    const said = summarise(content)
+    if (said !== '') {
+      const event: LedgerEvent = { kind: 'assistant', at: 0, turn: Math.max(1, turn), text: said, seq }
+      const full = detail(content)
+      if (full !== undefined) event.full = full
+      events.push(event)
+    }
+    for (const block of content) {
+      const record = asRecord(block)
+      if (record?.['type'] !== 'tool_use') continue
+      const name = typeof record['name'] === 'string' ? record['name'] : 'unknown'
+      const call: LedgerEvent = {
+        kind: 'tool', at: 0, turn: Math.max(1, turn), tool: name, seq,
+        text: toolArgSummary(name, record['input']),
+      }
+      const args = JSON.stringify(record['input'] ?? {}, null, 2)
+      if (args !== '{}') call.full = args.slice(0, DETAIL_LIMIT)
+      events.push(call)
+    }
+    void start
+  }
+
+  if (events.length === 0) return undefined
+  const session: Session = {
+    id: file.id,
+    agent: 'cursor',
+    // The file's own modification time is the only clock this source offers.
+    startedAt: file.mtimeMs,
+    steps: [],
+    events,
+  }
+  // `~/.cursor/projects/<mangled-path>/agent-transcripts/<id>/<id>.jsonl`
+  const project = /\/projects\/([^/]+)\/agent-transcripts\//.exec(file.path)?.[1]
+  if (project !== undefined && project !== 'empty-window') {
+    session.cwd = `/${project.replace(/^Users-/, 'Users/').replace(/-/g, '/')}`
+  }
+  return session
+}
+
+/**
+ * Read Cursor transcripts into sessions.
+ * @param limit - how many recent files to read.
+ * @param root - transcript root; defaults to the standard location.
+ * @returns sessions, newest file first.
+ */
+export async function readCursorSessions(limit = 40, root = CURSOR_ROOT): Promise<Session[]> {
+  const files = newestFirst(await filesIn(root, 'cursor'), limit)
+  const sessions: Session[] = []
+  for (const file of files) {
+    const session = await parseCursorFile(file)
+    if (session !== undefined) sessions.push(session)
+  }
+  return sessions
+}
+
 /**
  * Every transcript this machine has, newest first, unread.
  *
@@ -638,7 +754,9 @@ export function installedAgents(roots: Sources = defaultSources()): string[] {
  * @returns the session, or undefined when the file held no steps.
  */
 export async function readTranscript(file: TranscriptFile): Promise<Session | undefined> {
-  return file.agent === 'codex' ? await parseCodexFile(file) : await parseClaudeFile(file)
+  if (file.agent === 'codex') return await parseCodexFile(file)
+  if (file.agent === 'cursor') return await parseCursorFile(file)
+  return await parseClaudeFile(file)
 }
 
 /**
@@ -647,9 +765,10 @@ export async function readTranscript(file: TranscriptFile): Promise<Session | un
  * @returns all sessions found.
  */
 export async function readAllSessions(limit = 40): Promise<Session[]> {
-  const [claude, codex] = await Promise.all([
+  const [claude, codex, cursor] = await Promise.all([
     readClaudeSessions(limit),
     readCodexSessions(limit),
+    readCursorSessions(limit),
   ])
-  return [...claude, ...codex]
+  return [...claude, ...codex, ...cursor]
 }
