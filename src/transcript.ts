@@ -36,10 +36,12 @@ async function walk(dir: string, ext: string, out: string[] = []): Promise<strin
 /** A transcript on disk, before anything has been read out of it. */
 export interface TranscriptFile {
   path: string
-  agent: 'claude-code' | 'codex'
+  agent: 'claude-code' | 'codex' | 'cursor'
   /** Stable identity, derived from the filename; what a URL can carry. */
   id: string
   mtimeMs: number
+  /** Bytes on disk. A live monitor compares this against its baseline. */
+  size: number
 }
 
 /** The id a session gets: the filename, minus the parts that are packaging. */
@@ -59,8 +61,13 @@ async function filesIn(root: string, agent: TranscriptFile['agent']): Promise<Tr
   const paths = await walk(root, '.jsonl')
   return await Promise.all(paths.map(async path => {
     let mtimeMs = 0
-    try { mtimeMs = (await stat(path)).mtimeMs } catch { /* vanished mid-walk */ }
-    return { path, agent, id: idFor(path, agent), mtimeMs }
+    let size = 0
+    try {
+      const info = await stat(path)
+      mtimeMs = info.mtimeMs
+      size = info.size
+    } catch { /* vanished mid-walk */ }
+    return { path, agent, id: idFor(path, agent), mtimeMs, size }
   }))
 }
 
@@ -163,6 +170,51 @@ function numberAt(source: unknown, key: string): number {
 /** Default roots, overridable for tests. */
 export const CLAUDE_ROOT = join(homedir(), '.claude', 'projects')
 export const CODEX_ROOT = join(homedir(), '.codex', 'sessions')
+export const CURSOR_ROOT = join(homedir(), '.cursor', 'projects')
+
+/**
+ * Where every source lives.
+ *
+ * One object rather than four optional fields, because the failure this
+ * prevents is a caller that forgets one and silently falls through to the
+ * machine's real data. Two constructors exist so that forgetting means
+ * "nothing", never "everything": production asks for {@link defaultSources},
+ * tests build on {@link noSources} and override only what they create.
+ *
+ * Adding a fifth source means editing both functions and nothing else — every
+ * test that does not name it keeps reading nothing.
+ */
+export interface Sources {
+  claude: string
+  codex: string
+  cursor: string
+  /** A database file, not a directory; WorkBuddy keeps one for all sessions. */
+  workbuddy: string
+}
+
+/** The paths a real installation uses. */
+export function defaultSources(): Sources {
+  return {
+    claude: CLAUDE_ROOT,
+    codex: CODEX_ROOT,
+    cursor: CURSOR_ROOT,
+    workbuddy: join(homedir(), '.workbuddy', 'workbuddy.db'),
+  }
+}
+
+/**
+ * Paths that exist nowhere, as a base for tests.
+ * @param anchor - a directory to hang the non-existent names under.
+ * @returns sources that read as an installation with nothing on it.
+ */
+export function noSources(anchor: string): Sources {
+  return {
+    claude: join(anchor, 'no-claude'),
+    codex: join(anchor, 'no-codex'),
+    cursor: join(anchor, 'no-cursor'),
+    workbuddy: join(anchor, 'no-workbuddy.db'),
+  }
+}
 
 /**
  * Read one Claude Code transcript into a session.
@@ -553,13 +605,31 @@ export async function readCodexSessions(limit = 40, root = CODEX_ROOT): Promise<
  */
 export async function listTranscripts(
   limit = 40,
-  roots: { claude?: string; codex?: string } = {},
+  roots: Sources = defaultSources(),
 ): Promise<TranscriptFile[]> {
-  const [claude, codex] = await Promise.all([
-    filesIn(roots.claude ?? CLAUDE_ROOT, 'claude-code'),
-    filesIn(roots.codex ?? CODEX_ROOT, 'codex'),
+  const [claude, codex, cursor] = await Promise.all([
+    filesIn(roots.claude, 'claude-code'),
+    filesIn(roots.codex, 'codex'),
+    filesIn(roots.cursor, 'cursor'),
   ])
-  return newestFirst([...claude, ...codex], limit)
+  return newestFirst([...claude, ...codex, ...cursor], limit)
+}
+
+/**
+ * Which agents this machine has, by whether their directory exists.
+ *
+ * Presence cannot be inferred from the file list: a root that exists but holds
+ * nothing yet produces no files, and an agent that is installed but idle would
+ * then look unsupported rather than quiet.
+ * @param roots - transcript roots; defaults to the standard locations.
+ * @returns the agents whose root is present, sorted.
+ */
+export function installedAgents(roots: Sources = defaultSources()): string[] {
+  const out: string[] = []
+  if (existsSync(roots.claude)) out.push('claude-code')
+  if (existsSync(roots.codex)) out.push('codex')
+  if (existsSync(roots.cursor)) out.push('cursor')
+  return out.sort()
 }
 
 /**
