@@ -16,6 +16,7 @@ import { summarise, averageStatic, byAgent } from './summary.js'
 import { profiles, type AgentProfile } from './profile.js'
 import { T, esc, jitter, ms, money, moneyAll, span } from './html.js'
 import { costOf, priceNote, spendOf, PRICED_AT } from './price.js'
+import { RANGES } from './live.js'
 import { hairlineArea, hundredField, jitterStrip, tickDonut } from './charts.js'
 
 
@@ -470,13 +471,14 @@ function statusBar(session: Session): string {
 }
 
 /** One row in the sidebar's session list. */
-function sideEntry(session: Session, agent: string, active: boolean): string {
+function sideEntry(session: Session, agent: string, active: boolean, range = 'watch'): string {
   const events = session.events ?? []
   const turns = Math.max(0, ...events.map(e => e.turn), 0)
   const where = session.cwd === undefined ? '' : session.cwd.split('/').pop() ?? ''
   const t = summarise([session])
   return `<a class="entry${active ? ' on' : ''}"
-  href="?agent=${encodeURIComponent(agent)}&amp;s=${encodeURIComponent(session.id)}">
+  href="?agent=${encodeURIComponent(agent)}&amp;s=${encodeURIComponent(session.id)}${
+    range === 'watch' ? '' : `&amp;range=${range}`}">
   <span class="etop"><span class="ewhere">${esc(where || session.id.slice(0, 12))}</span>
   <span class="ewhen">${clock(session.startedAt)}</span></span>
   <span class="emeta">第 ${turns} 轮 · ${t.steps} 步 · ${t.toolCalls} 次工具</span>
@@ -508,8 +510,15 @@ export function renderLive(
   zoom = 'mid',
   compress = true,
   sourceDetails: readonly WorkbuddyDetail[] = [],
+  range = 'watch',
+  /** How many sessions the per-agent budget kept off this board, if any. */
+  capped?: { dropped: number; limit: number },
 ): string {
   const agents = [...boards.keys()]
+  // Every link on this page has to carry the window, or clicking a vendor
+  // silently drops you back to "since I started" — which looks like the data
+  // vanished rather than like the filter reset.
+  const keepRange = range === 'watch' ? '' : `&amp;range=${range}`
   const list = boards.get(active) ?? []
   // No session picked means the vendor tab itself, and that is the summary.
   const session = chosen === undefined ? undefined : list.find(one => one.id === chosen)
@@ -523,19 +532,26 @@ export function renderLive(
   const shownTabs = [...new Set([...watching, ...agents])].sort()
   const tabs = shownTabs.map(key => {
     const count = (boards.get(key) ?? []).length
-    return `<a class="atab${key === active ? ' on' : ''}" href="?agent=${encodeURIComponent(key)}">
+    return `<a class="atab${key === active ? ' on' : ''}" href="?agent=${encodeURIComponent(key)}${keepRange}">
     <span class="vendor">${esc(AGENT_VENDOR[key as AgentKind]?.vendor ?? key)}</span>
     <span class="product">${esc(AGENT_VENDOR[key as AgentKind]?.product ?? '')}</span>
     <span class="count">${count === 0 ? '—' : String(count)}</span></a>`
   }).join('')
 
+  // The window picker sits under the vendor tabs because it is the same kind
+  // of control: which slice of the world this board is about. `watch` is the
+  // default and the reason the product exists, so it leads.
+  const windows = `<div class="ranges">${Object.entries(RANGES).map(([key, label]) =>
+    `<a href="?agent=${encodeURIComponent(active)}${key === 'watch' ? '' : `&amp;range=${key}`}"${
+      key === range ? ' class="on"' : ''}>${esc(label)}</a>`).join('')}</div>`
+
   const entries = `<a class="entry summary${session === undefined ? ' on' : ''}"
-    href="?agent=${encodeURIComponent(active)}"><span class="etop">
+    href="?agent=${encodeURIComponent(active)}${keepRange}"><span class="etop">
     <span class="ewhere">总览</span></span>
     <span class="emeta">${list.length} 个会话加起来</span></a>`
     + (list.length === 0
       ? '<div class="empty side-empty">这个 agent 还没有新活动</div>'
-      : list.map(one => sideEntry(one, active, one.id === session?.id)).join(''))
+      : list.map(one => sideEntry(one, active, one.id === session?.id, range)).join(''))
 
   const noRecords = list.length > 0 && list.every(one => one.steps.length === 0 && (one.events ?? []).length === 0)
   const main = session === undefined && list.length > 0
@@ -562,8 +578,9 @@ ${statusBar(session)}`
   <div class="brand">Agent Ledger<span class="live"><span class="dot${refreshSeconds === null ? ' paused' : ''}"></span>${
     total === 0 ? (refreshSeconds === null ? '已暂停' : '监听中') : `${total} 个活跃会话`}</span></div>
   <nav class="atabs">${tabs}</nav>
+  ${windows}
   <div class="entries">${entries}</div>
-  <div class="sidefoot">自 ${clock(since)} 起 · ${refreshSeconds === null ? `<b>已暂停</b> · <a href="?agent=${encodeURIComponent(active)}">继续自刷</a>` : `每 ${refreshSeconds} 秒自刷 · <a href="?agent=${encodeURIComponent(active)}&amp;live=off">暂停</a>`} · 只读本地文件</div>
+  <div class="sidefoot">${capped === undefined ? '' : `另有 ${capped.dropped} 个会话没读进来（每来源上限 ${capped.limit}，用 --limit 调）<br/>`}${range === 'all' ? '全部记录' : `自 ${clock(since)} 起`} · ${refreshSeconds === null ? `<b>已暂停</b> · <a href="?agent=${encodeURIComponent(active)}${keepRange}">继续自刷</a>` : `每 ${refreshSeconds} 秒自刷 · <a href="?agent=${encodeURIComponent(active)}${keepRange}&amp;live=off">暂停</a>`} · 只读本地文件</div>
 </aside>
 <main class="main">${main}</main>`, refreshSeconds ?? undefined, 'app', true)
 }
@@ -1078,6 +1095,11 @@ body:has(.app){padding:0}
 .entry .ewhen{margin-left:auto;font-size:9.5px;color:#8f8e88;font-variant-numeric:tabular-nums}
 .entry .emeta{font-size:9.5px;color:#8f8e88}
 .side-empty{padding:14px 16px;font-size:10.5px}
+.ranges{display:flex;gap:2px;padding:7px 10px;border-bottom:1px solid #dcd9cf}
+.ranges a{flex:1;text-align:center;padding:4px 2px;font-size:10px;color:#6a6963;
+ text-decoration:none;border-radius:4px;letter-spacing:.02em}
+.ranges a:hover{background:#e7e4da}
+.ranges a.on{background:#1c1c1a;color:#f0efeb}
 .sidefoot{padding:9px 16px 12px;border-top:1px solid #dcd9cf;font-size:9px;
  color:#8f8e88;line-height:1.6}
 .main{padding:20px 26px 40px;min-width:0}

@@ -25,7 +25,10 @@ import {
   type Sources, type TranscriptFile,
 } from './transcript.js'
 import { renderIndex, renderLive, renderSession, ZOOMS } from './render.js'
-import { baselineFrom, boardsOf, movedSince, sinceBaseline, type Baseline } from './live.js'
+import {
+  baselineFrom, boardsOf, movedSince, sinceBaseline, windowFrom, RANGES, type Baseline,
+} from './live.js'
+import { readBaseline, writeBaseline } from './baseline.js'
 import { readWorkbuddySessions, workbuddyTouchedAt, type WorkbuddyDetail } from './workbuddy.js'
 import { redactSession } from './redact.js'
 import type { Session } from './types.js'
@@ -41,6 +44,16 @@ export interface ServeOptions {
   refreshSeconds?: number
   /** Show what is already on disk too, instead of only new activity. */
   history?: boolean
+  /**
+   * Where to remember the baseline across restarts.
+   *
+   * Absent means no persistence at all — never "use the default location". A
+   * test that forgets it must write nothing, the same rule the transcript
+   * roots follow.
+   */
+  state?: string
+  /** Ignore any stored baseline and start watching from now. */
+  fresh?: boolean
   /**
    * Where every source lives. Defaults to this machine's real installation.
    *
@@ -82,8 +95,14 @@ export function createLedgerServer(options: ServeOptions, now = Date.now()): Ser
   // Taken when the server is built, not when the first request arrives.
   // Otherwise starting the server and opening the browser five minutes later
   // would fold those five minutes of real work into the baseline and hide it.
-  const ready: Promise<Baseline> = listTranscripts(Infinity, sources)
-    .then(files => baselineFrom(files, now))
+  const ready: Promise<Baseline> = (async (): Promise<Baseline> => {
+    const stored = options.fresh === true ? undefined : await readBaseline(options.state)
+    if (stored !== undefined) return stored
+    const files = await listTranscripts(Infinity, sources)
+    const made = baselineFrom(files, now)
+    await writeBaseline(options.state, made)
+    return made
+  })()
   const refreshSeconds = options.refreshSeconds ?? 5
 
   /** Parse a file, or hand back the copy that is still good. */
@@ -117,6 +136,10 @@ export function createLedgerServer(options: ServeOptions, now = Date.now()): Ser
       // entrance animation is ever seen: it plays on load, and a page that
       // reloads every few seconds must not animate.
       const paused = /[?&]live=off/.test(url)
+      // Which slice of time the board is about. The baseline is the default
+      // and the product's original idea, but it is now one window of four.
+      const askedRange = /[?&]range=([a-z]+)/.exec(url)?.[1] ?? ''
+      const range = askedRange in RANGES ? askedRange : 'watch'
 
       if (path === '/favicon.ico') { res.writeHead(204).end(); return }
 
@@ -127,25 +150,40 @@ export function createLedgerServer(options: ServeOptions, now = Date.now()): Ser
 
       if (path === '/' && options.history !== true) {
         const baseline = await ready
-        const fresh = movedSince(files, baseline)
+        const since = windowFrom(range, baseline, Date.now())
+        // The baseline window asks "what moved", which needs the byte sizes.
+        // Every other window is a plain time filter, and the per-agent budget
+        // applies there because "全部" on this machine is 1,806 files.
+        const candidates = range === 'watch'
+          ? movedSince(files, baseline)
+          : files.filter(file => file.mtimeMs >= since)
         const sessions: Session[] = []
-        for (const file of fresh) {
+        const budget = new Map<string, number>()
+        // A cap that is not announced reads as "this is everything". It is
+        // not: widening to 全部 on this machine offers 1,806 files and the
+        // board reads the newest few per agent.
+        let capped = 0
+        for (const file of candidates) {
+          if (range !== 'watch' && (budget.get(file.agent) ?? 0) >= options.limit) { capped += 1; continue }
           // A source without timestamps is trimmed by position: records past
           // the byte offset the baseline recorded are the new ones. The cache
           // is bypassed for those, since what counts as new depends on the
-          // baseline rather than on the file alone.
+          // baseline rather than on the file alone. Only the baseline window
+          // has an offset to trim against; the others read the file whole.
           const parsed = file.agent === 'cursor'
-            ? await parseCursorFile(file, baseline.sizes.get(file.path) ?? 0)
+            ? await parseCursorFile(file, range === 'watch' ? baseline.sizes.get(file.path) ?? 0 : 0)
             : await load(file)
           if (parsed === undefined) continue
-          const live = sinceBaseline(parsed, baseline.at)
-          if (live !== undefined) sessions.push(live)
+          const live = sinceBaseline(parsed, since)
+          if (live === undefined) continue
+          budget.set(file.agent, (budget.get(file.agent) ?? 0) + 1)
+          sessions.push(live)
         }
         // WorkBuddy keeps a database rather than files, so it is read whole
         // and filtered by each row's own last-activity time.
         const source: WorkbuddyDetail[] = []
         for (const row of await readWorkbuddySessions(sources.workbuddy)) {
-          if ((row.session.endedAt ?? row.session.startedAt) < baseline.at) continue
+          if ((row.session.endedAt ?? row.session.startedAt) < since) continue
           sessions.push(row.session)
           source.push(row.detail)
         }
@@ -169,9 +207,10 @@ export function createLedgerServer(options: ServeOptions, now = Date.now()): Ser
         const chosen = watching.includes(wanted) ? wanted
           : agents[0] ?? watching[0] ?? ''
         res.writeHead(200, HTML).end(renderLive(
-          boards, watching, baseline.at, chosen,
+          boards, watching, since, chosen,
           picked === '' ? undefined : picked,
-          paused ? null : refreshSeconds, zoom, compress, source,
+          paused ? null : refreshSeconds, zoom, compress, source, range,
+          capped === 0 ? undefined : { dropped: capped, limit: options.limit },
         ))
         return
       }

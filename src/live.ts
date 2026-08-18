@@ -112,3 +112,36 @@ export function boardsOf(sessions: readonly Session[]): Map<string, Session[]> {
   }
   return out
 }
+
+/**
+ * The windows a board can look through.
+ *
+ * `watch` is the product's default and its original idea: only what moved
+ * after the server started. The others exist because that default throws away
+ * the afternoon the moment you restart, and because "how much did today cost"
+ * is a question the baseline cannot answer. The baseline is now one option
+ * among four rather than the only filter.
+ */
+export const RANGES: Readonly<Record<string, string>> = {
+  watch: '本次监视',
+  today: '今天',
+  week: '近 7 天',
+  all: '全部',
+}
+
+/**
+ * The instant a window opens.
+ * @param range - one of {@link RANGES}; anything else is treated as `watch`.
+ * @param baseline - when watching began.
+ * @param now - the current instant.
+ * @returns records at or after this are inside the window.
+ */
+export function windowFrom(range: string, baseline: Baseline, now: number): number {
+  if (range === 'all') return 0
+  if (range === 'week') return now - 7 * 86400_000
+  if (range === 'today') {
+    const d = new Date(now)
+    return new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime()
+  }
+  return baseline.at
+}
