@@ -372,6 +372,196 @@ ${timeline(events, px, compress)}
     + `<div class="src">${esc(note)}${more}</div>`
 }
 
+
+/**
+ * The only script in the product, and only on the live board.
+ *
+ * It buys three things a self-reloading page cannot have. Charts play when
+ * scrolled into view and replay on click, which is the reveal behaviour
+ * mono-tokens.js specifies. The refresh swaps the parts that changed instead
+ * of reloading, so the animation does not restart every few seconds and the
+ * scroll position survives. And with script off, the noscript meta refresh
+ * takes over, so the board still updates.
+ *
+ * The export and the session page carry no script at all: a file on disk has
+ * to open with no network and nothing running.
+ */
+const BOARD_SCRIPT = `(()=>{
+var D=document;D.documentElement.classList.add('js');
+var reduce=matchMedia('(prefers-reduced-motion:reduce)').matches;
+var io=reduce?null:new IntersectionObserver(function(es){
+  es.forEach(function(e){if(e.isIntersecting){e.target.classList.add('in');io.unobserve(e.target)}})
+},{threshold:.12});
+function arm(scope){
+  if(!io){scope.querySelectorAll('.card').forEach(function(c){c.classList.add('in')});return}
+  scope.querySelectorAll('.card:not(.in)').forEach(function(c){io.observe(c)})
+}
+arm(D);
+D.addEventListener('click',function(ev){
+  var t=ev.target,card=t.closest&&t.closest('.card');
+  if(!card||reduce||(t.closest&&t.closest('a,summary')))return;
+  card.classList.remove('in');void card.offsetWidth;card.classList.add('in')
+});
+var every=Number(D.body.dataset.refresh||0),timer=0;
+function swap(fresh,sel){
+  var a=D.querySelector(sel),b=fresh.querySelector(sel);
+  if(!a||!b||a.innerHTML===b.innerHTML)return;
+  a.innerHTML=b.innerHTML;arm(a)
+}
+function tick(){
+  fetch(location.href,{cache:'no-store'}).then(function(r){return r.text()}).then(function(t){
+    var fresh=new DOMParser().parseFromString(t,'text/html');
+    swap(fresh,'.entries');swap(fresh,'.atabs');swap(fresh,'main.main')
+  }).catch(function(){})
+}
+if(every>0){
+  timer=setInterval(tick,every*1000);
+  addEventListener('pagehide',function(){clearInterval(timer)});
+  D.addEventListener('visibilitychange',function(){
+    if(D.hidden){clearInterval(timer);timer=0}
+    else if(!timer){timer=setInterval(tick,every*1000);tick()}
+  })
+}
+})()`
+
+/** `14:32:07`, in the reader's own clock. */
+function clock(at: number): string {
+  return new Date(at).toTimeString().slice(0, 8)
+}
+
+/**
+ * One session's heading, and the one line of aggregate under its log.
+ *
+ * The figures live in a status bar rather than a card. A card the height of
+ * half the screen buys eight numbers you already knew and pushes the thing
+ * you came to read below the fold.
+ */
+function boardHeading(session: Session): string {
+  const where = session.cwd === undefined ? '' : ` · ${esc(session.cwd.split('/').slice(-2).join('/'))}`
+  const branch = session.gitBranch === undefined ? '' : ` · ${esc(session.gitBranch)}`
+  const turns = session.events === undefined ? 0 : Math.max(0, ...session.events.map(e => e.turn))
+  return `<div class="boardhead">
+  <span class="who">${esc(agentLabel(session.agent))}</span>
+  <span class="sid">${esc(session.id.slice(0, 12))}</span>
+  <span class="dim">起于 ${clock(session.startedAt)} · 第 ${turns} 轮${where}${branch}</span>
+</div>`
+}
+
+/** The aggregate for one session, on one line. */
+function statusBar(session: Session): string {
+  const t = summarise([session])
+  const events = session.events ?? []
+  const measured = events.filter(e => e.timing === 'measured')
+  const toolMs = measured.reduce((sum, e) => sum + (e.durationMs ?? 0), 0)
+  const turns = Math.max(0, ...events.map(e => e.turn), 0)
+  const cache = t.input + t.cacheRead === 0 ? '—' : `${(t.cacheHitRate * 100).toFixed(0)}%`
+  return `<div class="statusbar">
+  <span><b>${turns}</b> 轮 · <b>${t.steps}</b> 步 · <b>${t.toolCalls}</b> 次工具调用</span>
+  <span>工具实测 <b>${ms(toolMs)}</b>（${measured.length} 条）</span>
+  <span>缓存命中 <b>${cache}</b></span>
+  <span>输入 <b>${t.input.toLocaleString('en-US')}</b> · 输出 <b>${t.output.toLocaleString('en-US')}</b> token</span>
+</div>`
+}
+
+/** One row in the sidebar's session list. */
+function sideEntry(session: Session, agent: string, active: boolean): string {
+  const events = session.events ?? []
+  const turns = Math.max(0, ...events.map(e => e.turn), 0)
+  const where = session.cwd === undefined ? '' : session.cwd.split('/').pop() ?? ''
+  const t = summarise([session])
+  return `<a class="entry${active ? ' on' : ''}"
+  href="?agent=${encodeURIComponent(agent)}&amp;s=${encodeURIComponent(session.id)}">
+  <span class="etop"><span class="ewhere">${esc(where || session.id.slice(0, 12))}</span>
+  <span class="ewhen">${clock(session.startedAt)}</span></span>
+  <span class="emeta">第 ${turns} 轮 · ${t.steps} 步 · ${t.toolCalls} 次工具</span>
+</a>`
+}
+
+/**
+ * The live board: what your agents are doing right now.
+ *
+ * Laid out the way DeepSeek Harness lays it out — vendors and their sessions
+ * down the left, one trajectory filling the right. Everything already on disk
+ * when watching began is excluded, so an empty board is the correct answer
+ * until you say something to an agent, not a failure to find anything.
+ * @param boards - live sessions per agent, newest first.
+ * @param watching - agents whose transcript directory exists on this machine.
+ * @param since - when watching began.
+ * @param active - the agent whose sessions are listed.
+ * @param chosen - the session shown on the right, newest when unset.
+ * @param refreshSeconds - how often the page reloads itself.
+ * @returns a complete, self-contained HTML document.
+ */
+export function renderLive(
+  boards: ReadonlyMap<string, Session[]>,
+  watching: readonly string[],
+  since: number,
+  active: string,
+  chosen?: string,
+  refreshSeconds: number | null = 5,
+  zoom = 'mid',
+  compress = true,
+  sourceDetails: readonly WorkbuddyDetail[] = [],
+): string {
+  const agents = [...boards.keys()]
+  const list = boards.get(active) ?? []
+  // No session picked means the vendor tab itself, and that is the summary.
+  const session = chosen === undefined ? undefined : list.find(one => one.id === chosen)
+  const total = [...boards.values()].reduce((t, one) => t + one.length, 0)
+
+  // Every installed source gets a tab, whether or not it has been busy. Listing
+  // only the ones with activity meant that as soon as one agent moved, the others
+  // vanished from the switcher — so there was no way to switch, and no way to
+  // tell they were supported. The count column exists for exactly this: an
+  // agent with nothing yet reads as a dash, not as absent.
+  const shownTabs = [...new Set([...watching, ...agents])].sort()
+  const tabs = shownTabs.map(key => {
+    const count = (boards.get(key) ?? []).length
+    return `<a class="atab${key === active ? ' on' : ''}" href="?agent=${encodeURIComponent(key)}">
+    <span class="vendor">${esc(AGENT_VENDOR[key as AgentKind]?.vendor ?? key)}</span>
+    <span class="product">${esc(AGENT_VENDOR[key as AgentKind]?.product ?? '')}</span>
+    <span class="count">${count === 0 ? '—' : String(count)}</span></a>`
+  }).join('')
+
+  const entries = `<a class="entry summary${session === undefined ? ' on' : ''}"
+    href="?agent=${encodeURIComponent(active)}"><span class="etop">
+    <span class="ewhere">总览</span></span>
+    <span class="emeta">${list.length} 个会话加起来</span></a>`
+    + (list.length === 0
+      ? '<div class="empty side-empty">这个 agent 还没有新活动</div>'
+      : list.map(one => sideEntry(one, active, one.id === session?.id)).join(''))
+
+  const noRecords = list.length > 0 && list.every(one => one.steps.length === 0 && (one.events ?? []).length === 0)
+  const main = session === undefined && list.length > 0
+    ? `<div class="digesthead"><span class="who">${esc(agentLabel(active))}</span>
+  <span class="dim">总览 · ${list.length} 个活跃会话 · 自 ${clock(since)} 起</span></div>
+<div class="digest">${noRecords
+    ? renderSourceBoard(sourceDetails.filter(d => list.some(one => one.id === d.id)))
+    : renderDigest(digest(active, list))}</div>`
+    : session === undefined
+    ? `<div class="waiting">
+  <h1>${active === '' ? '还没有新的会话' : `${esc(agentLabel(active))} 还没有新的会话`}</h1>
+  <p>这块板子只显示 <b>${clock(since)}</b> 之后发生的事。${active === '' ? '' : '换这个 agent 开一个新会话，或者在它已开着的会话里说句话——'}
+     下一次刷新就会出现在左边。本机已有的历史记录不在这里显示。</p>
+  <p class="dimp">正在监听：${watching.map(a => esc(agentLabel(a))).join(' · ')}${
+    [...boards.entries()].filter(([, list]) => list.length > 0).length === 0 ? ''
+      : ` · 现在有活动的是 ${[...boards.entries()].filter(([, list]) => list.length > 0)
+        .map(([key, list]) => `${esc(agentLabel(key))}（${list.length}）`).join('、')}`}</p>
+</div>`
+    : `${boardHeading(session)}
+${trajectoryTable(session, 200, true, true, zoom, compress)}
+${statusBar(session)}`
+
+  return page('Agent Ledger — 实时轨迹', `<aside class="side">
+  <div class="brand">Agent Ledger<span class="live"><span class="dot${refreshSeconds === null ? ' paused' : ''}"></span>${
+    total === 0 ? (refreshSeconds === null ? '已暂停' : '监听中') : `${total} 个活跃会话`}</span></div>
+  <nav class="atabs">${tabs}</nav>
+  <div class="entries">${entries}</div>
+  <div class="sidefoot">自 ${clock(since)} 起 · ${refreshSeconds === null ? `<b>已暂停</b> · <a href="?agent=${encodeURIComponent(active)}">继续自刷</a>` : `每 ${refreshSeconds} 秒自刷 · <a href="?agent=${encodeURIComponent(active)}&amp;live=off">暂停</a>`} · 只读本地文件</div>
+</aside>
+<main class="main">${main}</main>`, refreshSeconds ?? undefined, 'app', true)
+}
+
 /**
  * The chart family, lifted from the lieflat-charts galleries.
  *
@@ -1128,7 +1318,7 @@ function fig(n: string, k: string): string {
  */
 function page(
   title: string, body: string,
-  refreshSeconds?: number, shell = 'wrap',
+  refreshSeconds?: number, shell = 'wrap', script = false,
 ): string {
   // Without script the meta refresh is the only way the board updates, so it
   // lives in <noscript>; with script the page swaps in place instead.
@@ -1146,6 +1336,7 @@ ${fallback}<title>${esc(title)}</title>
 <div class="${shell}">
 ${body}
 </div>
+${script ? `<script>${BOARD_SCRIPT}</script>` : ''}
 </body>
 </html>
 `

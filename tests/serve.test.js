@@ -11,6 +11,7 @@ import { join } from 'node:path'
 
 import { createLedgerServer } from '../lib/serve.js'
 import { listTranscripts } from '../lib/transcript.js'
+import { noSources } from '../lib/transcript.js'
 
 /** A Claude-shaped transcript: one turn, one step, one tool call with a result. */
 function transcript(said) {
@@ -47,8 +48,8 @@ async function fixture(said = 'DELETE-THE-DEAD-LOOP') {
   const file = join(root, 'session-abc123.jsonl')
   await writeFile(file, transcript(said), 'utf8')
   const server = createLedgerServer({
-    port: 0, limit: 40,
-    roots: { claude: root, codex: join(root, 'no-codex-here') },
+    port: 0, limit: 40, history: true,
+    roots: { ...noSources(root), claude: root },
   })
   const base = await new Promise(resolve => {
     server.listen(0, '127.0.0.1', () => resolve(`http://127.0.0.1:${server.address().port}`))
@@ -77,15 +78,47 @@ test('the index lists every session and links to it', async () => {
   } finally { stop() }
 })
 
-test('a session page carries the trajectory and the line-by-line ledger', async () => {
+test('a session page is a waterfall: one row per operation, its own time beside it', async () => {
   const { base, stop } = await fixture()
   try {
     const { status, body } = await get(base, '/s/session-abc123')
     assert.equal(status, 200)
-    assert.match(body, /ONE HAIRLINE = ONE STEP/, 'the trajectory')
     assert.match(body, /DELETE-THE-DEAD-LOOP/, 'what the person said')
     assert.match(body, /grep -rn while src/, 'what the tool was asked to do')
     assert.match(body, /src\/loop\.ts:42/, 'what came back')
+
+    // The tool call and its result are one second apart in the fixture, and
+    // that interval is measured rather than inferred — so the row must say
+    // 1,000 ms and its bar must be the filled kind.
+    assert.match(body, /1,000 ms/, 'the measured tool duration')
+    assert.match(body, /class="op real"/, 'a measured operation is filled in the overview')
+    assert.match(body, /<details><summary class="line">/, 'rows expand to the untruncated original')
+    // The page must distinguish the two kinds of duration out loud. A bar
+    // length that silently mixed a measured interval with an inferred one
+    // would draw the same seconds twice.
+    assert.match(body, /实测/, 'the page names measured durations')
+    assert.match(body, /1 秒 = \d+ px/, 'and states the scale, so a bar length means something')
+  } finally { stop() }
+})
+
+test('the timeline states its scale and offers fixed zoom levels', async () => {
+  const { base, stop } = await fixture()
+  try {
+    for (const [zoom, px] of [['wide', 4], ['mid', 24], ['close', 120]]) {
+      const { body } = await get(base, `/s/session-abc123?zoom=${zoom}`)
+      // A stated pixels-per-second is what makes a bar comparable to any
+      // other bar on the page, in any turn or any session.
+      assert.match(body, new RegExp(`1 秒 = ${px} px`), `${zoom} names its scale`)
+      assert.match(body, new RegExp(`<a href="\\?zoom=${zoom}&amp;idle=off" class="on">`))
+    }
+    const bogus = await get(base, '/s/session-abc123?zoom=../../etc')
+    assert.match(bogus.body, /1 秒 = 24 px/, 'an unknown zoom falls back')
+
+    // Clicking a block on the axis goes to the row it stands for; without
+    // script that is an anchor, and the row it lands on is the target.
+    const { body } = await get(base, '/s/session-abc123')
+    assert.match(body, /<a href="#r2"><rect/, 'every block links to its record')
+    assert.match(body, /<tr id="r2"/, 'and the record is there to land on')
   } finally { stop() }
 })
 
@@ -136,7 +169,9 @@ test('a quiet agent still reaches the index when a busy one floods it', async ()
   for (const n of ['a', 'b', 'c']) {
     await writeFile(join(claude, `session-${n}.jsonl`), transcript(`CLAUDE-${n}`), 'utf8')
   }
-  const server = createLedgerServer({ port: 0, limit: 2, roots: { claude, codex } })
+  const server = createLedgerServer({
+    port: 0, limit: 2, history: true, roots: { ...noSources(codex), claude, codex },
+  })
   const base = await new Promise(resolve => {
     server.listen(0, '127.0.0.1', () => resolve(`http://127.0.0.1:${server.address().port}`))
   })
@@ -154,7 +189,7 @@ test('listTranscripts stats without reading, and keeps the newest first', async 
   const { root, stop } = await fixture()
   stop()
   await writeFile(join(root, 'session-newer.jsonl'), transcript('later'), 'utf8')
-  const files = await listTranscripts(40, { claude: root, codex: join(root, 'none') })
+  const files = await listTranscripts(40, { ...noSources(root), claude: root })
   assert.equal(files.length, 2)
   assert.equal(files[0].id, 'session-newer', 'newest first')
   assert.ok(files.every(f => f.agent === 'claude-code' && f.mtimeMs > 0))
@@ -181,7 +216,9 @@ test('the comparison names what it cannot measure, and appears only with two age
       info: { last_token_usage: { input_tokens: 900, output_tokens: 40, cached_input_tokens: 400 } },
     } }),
   ].join('\n'), 'utf8')
-  const server = createLedgerServer({ port: 0, limit: 5, roots: { claude, codex } })
+  const server = createLedgerServer({
+    port: 0, limit: 5, history: true, roots: { ...noSources(codex), claude, codex },
+  })
   const base2 = await new Promise(resolve => {
     server.listen(0, '127.0.0.1', () => resolve(`http://127.0.0.1:${server.address().port}`))
   })
@@ -194,4 +231,63 @@ test('the comparison names what it cannot measure, and appears only with two age
     assert.match(body, /答得好不好/, 'it must say out loud what is unmeasurable')
     assert.match(body, /只看，别当结论/, 'the task-bound group must be marked as such')
   } finally { server.close(); server.closeAllConnections() }
+})
+
+test('the index switches between the agents this machine actually has', async () => {
+  const claude = await mkdtemp(join(tmpdir(), 'agent-ledger-s1-'))
+  const codex = await mkdtemp(join(tmpdir(), 'agent-ledger-s2-'))
+  await writeFile(join(claude, 'session-only-claude.jsonl'), transcript('CLAUDE-SIDE'), 'utf8')
+  await writeFile(join(codex, 'rollout-2026-01-01T00-00-00-only-codex.jsonl'), [
+    JSON.stringify({ timestamp: '2026-01-01T00:00:00.000Z', type: 'turn_context', payload: { model: 'gpt-5.4' } }),
+    JSON.stringify({ timestamp: '2026-01-01T00:00:01.000Z', type: 'event_msg', payload: {
+      type: 'token_count', info: { last_token_usage: { input_tokens: 10, output_tokens: 5, cached_input_tokens: 0 } },
+    } }),
+  ].join('\n'), 'utf8')
+  const server = createLedgerServer({
+    port: 0, limit: 40, history: true, roots: { ...noSources(codex), claude, codex },
+  })
+  const base = await new Promise(resolve => {
+    server.listen(0, '127.0.0.1', () => resolve(`http://127.0.0.1:${server.address().port}`))
+  })
+  try {
+    const both = await get(base, '/')
+    assert.match(both.body, /href="\?agent=claude-code"/, 'a tab per agent present')
+    assert.match(both.body, /href="\?agent=codex"/)
+    assert.match(both.body, /<a href="\?agent=all" class="on">/, 'all is the default')
+
+    const only = await get(base, '/?agent=codex')
+    assert.match(only.body, /only-codex/, 'the chosen agent is listed')
+    assert.ok(!/only-claude/.test(only.body), 'and the other one is not')
+    assert.match(only.body, /<a href="\?agent=codex" class="on">/)
+
+    // An agent this machine has no transcripts from is not a page.
+    const bogus = await get(base, '/?agent=gemini')
+    assert.match(bogus.body, /<a href="\?agent=all" class="on">/, 'an unknown agent falls back to all')
+    assert.match(bogus.body, /only-claude/)
+  } finally { server.close(); server.closeAllConnections() }
+})
+
+test('one agent alone gets no switcher, because there is nothing to switch to', async () => {
+  const { base, stop } = await fixture()
+  try {
+    const { body } = await get(base, '/')
+    assert.ok(!/\?agent=/.test(body))
+  } finally { stop() }
+})
+
+test('the fit scale says out loud that its lengths do not travel', async () => {
+  const { base, stop } = await fixture()
+  try {
+    const fitted = await get(base, '/s/session-abc123?zoom=fit')
+    assert.match(fitted.body, /铺满/, 'the scale names itself')
+    assert.match(fitted.body, /1 秒 ≈ [\d.]+ px/, 'and reports what it worked out to')
+    // Every other scale is a promise that a bar means the same thing anywhere
+    // on the page. This one is not, and a reader has to be told.
+    assert.match(fitted.body, /换个会话就不能比/, 'and states the limit it carries')
+    assert.match(fitted.body, /class="tl fit"/)
+
+    const fixed = await get(base, '/s/session-abc123?zoom=mid')
+    assert.match(fixed.body, /1 秒 = 24 px/)
+    assert.ok(!/换个会话就不能比/.test(fixed.body), 'a fixed scale carries no such caveat')
+  } finally { stop() }
 })

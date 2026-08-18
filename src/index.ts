@@ -5,7 +5,7 @@
 export { startProxy, routeFor } from './proxy.js'
 export { parseStep, sseEvents, estimateTokens, jsonTokens, agentFromUserAgent } from './parse.js'
 export { summarise, averageStatic, byAgent, median } from './summary.js'
-export { renderDashboard, renderIndex, renderSession, chooseUnit } from './render.js'
+export { renderDashboard, renderIndex, renderLive, renderSession, trajectoryTable, ZOOMS, chooseUnit } from './render.js'
 export { createLedgerServer, serve } from './serve.js'
 export { profile, profiles, stepsByTurn } from './profile.js'
 export { redactSession, redactAll } from './redact.js'

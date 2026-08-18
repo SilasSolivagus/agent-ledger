@@ -20,8 +20,13 @@
 
 import { createServer, type Server } from 'node:http'
 import { spawn } from 'node:child_process'
-import { listTranscripts, readTranscript, type TranscriptFile } from './transcript.js'
-import { renderIndex, renderSession } from './render.js'
+import {
+  defaultSources, installedAgents, listTranscripts, parseCursorFile, readTranscript,
+  type Sources, type TranscriptFile,
+} from './transcript.js'
+import { renderIndex, renderLive, renderSession, ZOOMS } from './render.js'
+import { baselineFrom, boardsOf, movedSince, sinceBaseline, type Baseline } from './live.js'
+import { readWorkbuddySessions, workbuddyTouchedAt, type WorkbuddyDetail } from './workbuddy.js'
 import { redactSession } from './redact.js'
 import type { Session } from './types.js'
 
@@ -32,8 +37,18 @@ export interface ServeOptions {
   limit: number
   /** Serve shape without content — safe for a screen share. */
   redact?: boolean
-  /** Transcript roots; defaults to the standard locations. */
-  roots?: { claude?: string; codex?: string }
+  /** Seconds between the board's own reloads. */
+  refreshSeconds?: number
+  /** Show what is already on disk too, instead of only new activity. */
+  history?: boolean
+  /**
+   * Where every source lives. Defaults to this machine's real installation.
+   *
+   * A test builds on `noSources()` so that a path it forgets reads as absent
+   * rather than as the developer's own data — the bug this shape exists to
+   * make impossible.
+   */
+  roots?: Sources
 }
 
 /**
@@ -61,8 +76,15 @@ function plain(title: string, detail: string): string {
  * @param options - port is unused here; limit and roots are what matter.
  * @returns an idle HTTP server.
  */
-export function createLedgerServer(options: ServeOptions): Server {
+export function createLedgerServer(options: ServeOptions, now = Date.now()): Server {
   const cache = new Map<string, Cached>()
+  const sources = options.roots ?? defaultSources()
+  // Taken when the server is built, not when the first request arrives.
+  // Otherwise starting the server and opening the browser five minutes later
+  // would fold those five minutes of real work into the baseline and hide it.
+  const ready: Promise<Baseline> = listTranscripts(Infinity, sources)
+    .then(files => baselineFrom(files, now))
+  const refreshSeconds = options.refreshSeconds ?? 5
 
   /** Parse a file, or hand back the copy that is still good. */
   const load = async (file: TranscriptFile): Promise<Session | undefined> => {
@@ -82,31 +104,96 @@ export function createLedgerServer(options: ServeOptions): Server {
 
   return createServer((req, res) => {
     void (async (): Promise<void> => {
-      const path = decodeURIComponent((req.url ?? '/').split('?')[0] ?? '/')
+      const url = req.url ?? '/'
+      const path = decodeURIComponent(url.split('?')[0] ?? '/')
+      // The page carries no script, so its one control — how many pixels a
+      // second is worth — travels in the URL.
+      const wanted = decodeURIComponent(/[?&]agent=([^&]+)/.exec(url)?.[1] ?? 'all')
+      const picked = decodeURIComponent(/[?&]s=([^&]+)/.exec(url)?.[1] ?? '')
+      const askedZoom = /[?&]zoom=([a-z]+)/.exec(url)?.[1] ?? ''
+      const zoom = askedZoom in ZOOMS ? askedZoom : 'mid'
+      const compress = /[?&]idle=on/.test(url) ? false : true
+      // Pausing removes the meta refresh, which is also the only way the
+      // entrance animation is ever seen: it plays on load, and a page that
+      // reloads every few seconds must not animate.
+      const paused = /[?&]live=off/.test(url)
 
       if (path === '/favicon.ico') { res.writeHead(204).end(); return }
 
       // Every route needs the file list and nothing else needs a scan, so this
       // is the one place the disk is walked. Stat over a thousand files is
       // milliseconds; it is the reads that are expensive.
-      const files = await listTranscripts(Infinity, options.roots)
+      const files = await listTranscripts(Infinity, sources)
+
+      if (path === '/' && options.history !== true) {
+        const baseline = await ready
+        const fresh = movedSince(files, baseline)
+        const sessions: Session[] = []
+        for (const file of fresh) {
+          // A source without timestamps is trimmed by position: records past
+          // the byte offset the baseline recorded are the new ones. The cache
+          // is bypassed for those, since what counts as new depends on the
+          // baseline rather than on the file alone.
+          const parsed = file.agent === 'cursor'
+            ? await parseCursorFile(file, baseline.sizes.get(file.path) ?? 0)
+            : await load(file)
+          if (parsed === undefined) continue
+          const live = sinceBaseline(parsed, baseline.at)
+          if (live !== undefined) sessions.push(live)
+        }
+        // WorkBuddy keeps a database rather than files, so it is read whole
+        // and filtered by each row's own last-activity time.
+        const source: WorkbuddyDetail[] = []
+        for (const row of await readWorkbuddySessions(sources.workbuddy)) {
+          if ((row.session.endedAt ?? row.session.startedAt) < baseline.at) continue
+          sessions.push(row.session)
+          source.push(row.detail)
+        }
+
+        const boards = boardsOf(sessions)
+        // A source is watched because it is installed, not because it has been
+        // busy. Otherwise WorkBuddy is missing from "正在监听" until it happens
+        // to move, which reads as "not supported" rather than "nothing yet".
+        // Installed, not busy: a root that exists but holds nothing yet still
+        // belongs in the switcher, or an idle agent reads as unsupported.
+        const watching = [...new Set([
+          ...installedAgents(sources),
+          ...sessions.map(one => one.agent),
+          ...(await workbuddyTouchedAt(sources.workbuddy) > 0 ? ['workbuddy'] : []),
+        ])].sort()
+        // A watched agent stays selected even with nothing to show. The
+        // fallback is for an unknown value in the URL, and "installed but
+        // idle" is not one — falling back there silently bounced a click on a
+        // quiet agent to whichever one happened to be busy.
+        const agents = [...boards.keys()]
+        const chosen = watching.includes(wanted) ? wanted
+          : agents[0] ?? watching[0] ?? ''
+        res.writeHead(200, HTML).end(renderLive(
+          boards, watching, baseline.at, chosen,
+          picked === '' ? undefined : picked,
+          paused ? null : refreshSeconds, zoom, compress, source,
+        ))
+        return
+      }
 
       if (path === '/') {
-        // The budget is per agent, and it counts sessions found rather than
-        // files looked at. Both matter: one shared budget hands the whole page
+        // History mode. The budget is per agent and counts sessions found
+        // rather than files looked at: one shared budget hands the whole page
         // to whichever agent you used today, and counting files means a run of
-        // opened-then-abandoned windows — Codex leaves eight-line stubs —
-        // spends the entire budget on nothing.
+        // opened-then-abandoned windows spends it all on nothing.
+        const present = [...new Set(files.map(file => file.agent))].sort()
+        const agent = present.includes(wanted as TranscriptFile['agent']) ? wanted : 'all'
         const sessions: Session[] = []
         const found = new Map<string, number>()
         for (const file of files) {
+          if (agent !== 'all' && file.agent !== agent) continue
           if ((found.get(file.agent) ?? 0) >= options.limit) continue
           const session = await load(file)
           if (session === undefined) continue
           found.set(file.agent, (found.get(file.agent) ?? 0) + 1)
           sessions.push(session)
         }
-        res.writeHead(200, HTML).end(renderIndex(sessions, files.length))
+        res.writeHead(200, HTML).end(renderIndex(sessions, files.length, present, agent))
         return
       }
 
@@ -124,7 +211,7 @@ export function createLedgerServer(options: ServeOptions): Server {
           res.writeHead(200, HTML).end(plain('这个会话是空的', '记录存在，但里面没有任何模型请求。'))
           return
         }
-        res.writeHead(200, HTML).end(renderSession(session))
+        res.writeHead(200, HTML).end(renderSession(session, zoom, compress))
         return
       }
 
@@ -172,7 +259,9 @@ export async function serve(options: ServeOptions, open: boolean): Promise<numbe
 
   console.error(`agent-ledger serving on ${url}`)
   if (options.redact === true) console.error('  redacted — shape only, no commands, paths, or conversation')
-  console.error(`  index reads the ${String(options.limit)} most recent sessions · refresh to pick up new ones`)
+  console.error(options.history === true
+    ? `  browsing history · ${String(options.limit)} most recent sessions per agent`
+    : `  watching for new activity · everything already on disk stays off the board`)
   console.error('  local only, nothing uploaded · Ctrl-C to stop')
   if (open) openBrowser(url)
 

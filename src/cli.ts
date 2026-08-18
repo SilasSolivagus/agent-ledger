@@ -24,13 +24,18 @@ import type { Session, Step } from './types.js'
 export const USAGE = `agent-ledger — see what your coding agent actually did
 
 Usage:
-  agent-ledger serve [--port <n>] [--limit <n>] [--no-open] [--redact]
-        open one address that stays; refresh to see the session you are in
-        --limit is per agent, so a quiet one never falls off the page
-        --redact serves the shape only — for a screen share or a demo
+  agent-ledger serve [--port <n>] [--refresh <s>] [--history] [--no-open] [--redact]
+        a board showing what your agents are doing now, one per vendor
+        only activity after it starts — whatever is already on disk stays off
+        --refresh seconds between the board's own reloads (default 5)
+        --history browse what is already there instead, --limit per agent
+        --redact serve the shape only — for a screen share or a demo
 
-  agent-ledger report [--out <file>] [--limit <n>] [--redact]
+  agent-ledger report [--out <file>] [--limit <n>] [--agent <kind>]
+                     [--rows <n>] [--full] [--redact]
         read what Claude Code and Codex already wrote down, and render it
+        --agent keeps one agent only; --rows caps trajectory rows per session
+        --full includes the expandable originals, which multiply file size
         --redact drops every word you or the model wrote, keeping only the
         shape: turns, tools, tokens, timings. Share that, not the raw page.
 
@@ -179,6 +184,8 @@ export async function main(argv: readonly string[]): Promise<number> {
         port: Number(flag('--port') ?? 4489),
         limit: Number(flag('--limit') ?? 40),
         redact: rest.includes('--redact'),
+        refreshSeconds: Number(flag('--refresh') ?? 5),
+        history: rest.includes('--history'),
       },
       !rest.includes('--no-open'),
     )
