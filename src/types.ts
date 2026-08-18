@@ -12,7 +12,32 @@
  */
 
 /** Which product produced a session. Enum, never free text. */
-export type AgentKind = 'claude-code' | 'codex' | 'dsh' | 'unknown'
+export type AgentKind = 'claude-code' | 'codex' | 'cursor' | 'dsh' | 'workbuddy' | 'unknown'
+
+/**
+ * Who makes the agent, said out loud.
+ *
+ * A board that says only `codex` leaves the reader to know that is OpenAI's.
+ * Anyone comparing two agents is comparing two vendors, so the vendor is on
+ * the tab, not implied by a product name.
+ */
+export const AGENT_VENDOR: Readonly<Record<AgentKind, { vendor: string; product: string }>> = {
+  'claude-code': { vendor: 'Anthropic', product: 'Claude Code' },
+  'codex': { vendor: 'OpenAI', product: 'Codex' },
+  'cursor': { vendor: 'Anysphere', product: 'Cursor' },
+  'dsh': { vendor: 'DeepSeek', product: 'Harness' },
+  // WorkBuddy runs several vendors' models, so the vendor slot is the product
+  // itself rather than a maker this tool would be guessing at.
+  'workbuddy': { vendor: 'WorkBuddy', product: '' },
+  'unknown': { vendor: '未知来源', product: '' },
+}
+
+/** `Anthropic · Claude Code`, for a tab or a heading. */
+export function agentLabel(agent: string): string {
+  const known = AGENT_VENDOR[agent as AgentKind]
+  if (known === undefined) return agent
+  return known.product === '' ? known.vendor : `${known.vendor} · ${known.product}`
+}
 
 /** The wire dialect a request used. */
 export type Wire = 'anthropic-messages' | 'openai-responses' | 'openai-chat' | 'unknown'
@@ -72,18 +97,61 @@ export interface Step {
   error?: string
 }
 
+/**
+ * How long an operation took, and how confidently we know it.
+ *
+ * `measured` is a real interval between two recorded facts — a tool call and
+ * the record carrying its result. `gap` is the distance to the previous
+ * record, which is all a transcript offers for the model's own time: it
+ * contains the request, but also whatever the harness and the person did in
+ * between. The two must never be added together or drawn alike.
+ */
+export type Timing = 'measured' | 'gap'
+
 /** One line in the session ledger — what happened, in order. */
 export interface LedgerEvent {
   kind: 'user' | 'assistant' | 'tool' | 'system' | 'context'
   at: number
   /** Which turn this belongs to; turns are numbered from 1. */
   turn: number
-  /** Short human-readable summary. Full content is never copied here. */
+  /** One-line summary, for the row. */
   text: string
   /** Tool name, when kind is 'tool'. */
   tool?: string
   /** Short result summary, when the following record carried one. */
   result?: string
+  /** Full text behind {@link text}, for the details panel. */
+  full?: string
+  /** Full text behind {@link result}. */
+  resultFull?: string
+  /** How long this operation took. */
+  durationMs?: number
+  /** Whether {@link durationMs} was measured or inferred from the record gap. */
+  timing?: Timing
+  /** Token accounting for the request that produced this record. Assistant only. */
+  usage?: Usage
+  /** The tool reported a failure. */
+  isError?: boolean
+  /**
+   * Which record in the file produced this event.
+   *
+   * Sources that stamp their records let the live board trim by time. Cursor
+   * writes no timestamp at all, so its board trims by position instead: the
+   * records past the byte offset the baseline recorded are the new ones.
+   */
+  seq?: number
+  /**
+   * Which skill this record was produced under, when the harness attributes
+   * it. Claude Code records this; Codex rollouts carry no equivalent, so a
+   * panel built on it must say the field is absent rather than show a zero.
+   */
+  skill?: string
+  /** Which subagent produced this record, when it was not the main loop. */
+  subagent?: string
+  /** The record belongs to a subagent's own conversation. */
+  sidechain?: boolean
+  /** The model that produced this record. Assistant only. */
+  model?: string
 }
 
 /** A run of steps captured from one agent process. */
