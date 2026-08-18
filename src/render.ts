@@ -11,6 +11,7 @@
 import type { LedgerEvent, Session, Timing } from './types.js'
 import { agentLabel, AGENT_VENDOR, type AgentKind } from './types.js'
 import { digest, type Digest, type Ranked } from './digest.js'
+import type { WorkbuddyDetail } from './workbuddy.js'
 import { summarise, averageStatic, byAgent } from './summary.js'
 import { profiles, type AgentProfile } from './profile.js'
 
@@ -757,6 +758,61 @@ ${(() => {
   })()}
 ${concurrencyCard(d)}
 ${failureCard(d)}`
+}
+
+/**
+ * A board for a source that keeps sessions but not a transcript.
+ *
+ * WorkBuddy records what a session is and how much context it occupies; the
+ * conversation lives server-side. Rendering the usual panels would show zeros
+ * where the answer is "not recorded here", so this board shows what the source
+ * does have and names what it does not.
+ * @param details - one entry per live session, newest first.
+ * @returns the panels for that source.
+ */
+export function renderSourceBoard(details: readonly WorkbuddyDetail[]): string {
+  if (details.length === 0) return ''
+  const n = (v: number): string => v.toLocaleString('en-US')
+  const models = new Map<string, number>()
+  for (const d of details) models.set(d.model, (models.get(d.model) ?? 0) + 1)
+
+  const rows = details.map(d => {
+    const share = d.size === 0 ? 0 : (d.used / d.size) * 100
+    return `<tr><td>${esc(d.title === '' ? d.id.slice(0, 12) : d.title)}</td>`
+      + `<td>${esc(d.model)}</td><td>${esc(d.status)}</td>`
+      + `<td class="num">${n(d.used)}</td><td class="num dim">${
+        d.size === 0 ? '' : `${share.toFixed(0)}% of ${n(d.size)}`}</td></tr>`
+  }).join('')
+
+  const occupancy = details.filter(d => d.size > 0)
+  const field = occupancy.length === 0 ? '' : hundredField(
+    [...models.entries()].map(([model, count]) => ({
+      label: `${model} · ${count} 个会话`,
+      pct: (count / details.length) * 100,
+    })),
+  )
+
+  return `<div class="card wide">
+  <h2>会话</h2>
+  <div class="sub">${details.length} 个 · 按最后活动时间排序</div>
+  <table class="mini"><thead><tr><th></th><th>模型</th><th>状态</th>
+    <th class="num">上下文占用</th><th class="num">占窗口</th></tr></thead><tbody>${rows}</tbody></table>
+</div>
+${field === '' ? '' : `<div class="card wide">
+  <h2>模型分布</h2>
+  <div class="sub">按会话数计 —— 这个来源不记录逐步 token，所以无法按输出量分</div>
+  ${field}
+</div>`}
+<div class="card wide">
+  <h2>这个来源没有的东西</h2>
+  <div class="sub">下面几项在别的 agent 看板上有，在这里没有 —— 不是零，是这个来源不记录</div>
+  <table class="mini"><tbody>
+    <tr><td>逐条轨迹</td><td class="dim">对话本体存在服务端，本机数据库只有会话级元数据</td></tr>
+    <tr><td>工具调用与实测耗时</td><td class="dim">无逐条记录，无从配对调用与返回</td></tr>
+    <tr><td>输入 / 输出 / 缓存 token</td><td class="dim">只有上下文占用总量，没有逐步用量拆分</td></tr>
+    <tr><td>skill / 子代理归因</td><td class="dim">无此字段</td></tr>
+  </tbody></table>
+</div>`
 }
 
 const STYLE = `*{box-sizing:border-box}
