@@ -18,6 +18,7 @@ import { join } from 'node:path'
 import { createLedgerServer } from '../lib/serve.js'
 import { redactSession } from '../lib/redact.js'
 import { readClaudeSessions } from '../lib/transcript.js'
+import { noSources } from '../lib/transcript.js'
 
 /** Every marker planted below. None may appear in a redacted page. */
 const MARKERS = [
@@ -80,7 +81,9 @@ async function planted() {
 }
 
 async function pages(roots, redact) {
-  const server = createLedgerServer({ port: 0, limit: 40, redact, roots })
+  const server = createLedgerServer({
+    port: 0, limit: 40, redact, history: true, roots: { ...noSources(roots.codex), ...roots },
+  })
   const base = await new Promise(resolve => {
     server.listen(0, '127.0.0.1', () => resolve(`http://127.0.0.1:${server.address().port}`))
   })
@@ -116,9 +119,11 @@ test('redaction keeps the shape: turns, tools, counts, timings', async () => {
   const roots = await planted()
   const out = await pages(roots, true)
   const session = out['/s/session-leak']
-  assert.match(session, /ONE HAIRLINE = ONE STEP/, 'the trajectory survives')
+  assert.match(session, /class="op real"/, 'the overview strip survives, bars and all')
+  assert.match(session, /1,000 ms/, 'measured durations are facts, not content')
   assert.match(session, /Bash/, 'tool names are kept on purpose — they are the substance')
   assert.match(session, /第 1 轮/, 'turn structure survives')
+  assert.ok(!/<pre>/.test(session), 'no details panel, because there is nothing left to reveal')
   assert.match(session, /··· \d+ 字/, 'how much was said is kept, what was said is not')
 
   // Every figure must be identical with and without redaction. If hiding the

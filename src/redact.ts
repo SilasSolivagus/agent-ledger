@@ -48,9 +48,20 @@ function redactEvent(event: LedgerEvent): LedgerEvent {
     text: elided(event.text),
   }
   // The tool's name stays; everything it was asked to do, and everything it
-  // answered, does not.
+  // answered, does not. `full` and `resultFull` hold the untruncated originals
+  // behind the details panel and are dropped outright rather than elided —
+  // there is nothing a reader gains from the length of text they cannot see.
   if (event.tool !== undefined) out.tool = event.tool
   if (event.result !== undefined) out.result = elided(event.result)
+  // Timing and token facts are measurements, not content.
+  if (event.durationMs !== undefined) out.durationMs = event.durationMs
+  if (event.timing !== undefined) out.timing = event.timing
+  if (event.usage !== undefined) out.usage = event.usage
+  if (event.isError !== undefined) out.isError = event.isError
+  if (event.model !== undefined) out.model = event.model
+  if (event.sidechain !== undefined) out.sidechain = event.sidechain
+  // Skill and subagent names are yours: a skill catalogue is a description of
+  // how you work, and a subagent name can carry a project's vocabulary.
   return out
 }
 
