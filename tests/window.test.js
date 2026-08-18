@@ -165,12 +165,15 @@ test('a corrupt state file reads as no baseline, not as an empty one', async () 
   assert.equal(await readBaseline(path), undefined, 'a zero start time is not a baseline')
 })
 
-test('windowFrom puts the four windows in the right order', () => {
+test('windowFrom puts every window at the right instant', () => {
   const baseline = { at: 5000, sizes: new Map() }
   const now = Date.UTC(2026, 7, 18, 12, 0, 0)
   assert.equal(windowFrom('watch', baseline, now), 5000)
   assert.equal(windowFrom('all', baseline, now), 0)
   assert.equal(windowFrom('week', baseline, now), now - 7 * 86400_000)
+  assert.equal(windowFrom('month', baseline, now), now - 30 * 86400_000)
+  assert.ok(windowFrom('month', baseline, now) < windowFrom('week', baseline, now),
+    'and they widen in the order the picker lists them')
   assert.ok(windowFrom('today', baseline, now) <= now)
   assert.ok(windowFrom('today', baseline, now) > now - 86400_000)
 })

@@ -126,6 +126,7 @@ export const RANGES: Readonly<Record<string, string>> = {
   watch: '本次监视',
   today: '今天',
   week: '近 7 天',
+  month: '近 30 天',
   all: '全部',
 }
 
@@ -138,6 +139,7 @@ export const RANGES: Readonly<Record<string, string>> = {
  */
 export function windowFrom(range: string, baseline: Baseline, now: number): number {
   if (range === 'all') return 0
+  if (range === 'month') return now - 30 * 86400_000
   if (range === 'week') return now - 7 * 86400_000
   if (range === 'today') {
     const d = new Date(now)

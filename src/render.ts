@@ -1202,9 +1202,12 @@ body:has(.app){padding:0}
 .entry .emeta{font-size:9.5px;color:#8f8e88}
 .side-empty{padding:14px 16px;font-size:10.5px}
 .atab.cross .vendor{letter-spacing:.06em}
-.ranges{display:flex;gap:2px;padding:7px 10px;border-bottom:1px solid #dcd9cf}
-.ranges a{flex:1;text-align:center;padding:4px 2px;font-size:10px;color:#6a6963;
- text-decoration:none;border-radius:4px;letter-spacing:.02em}
+/* Chips wrap as a group rather than stretch to equal widths: with five
+   windows in a 235px column, equal widths broke 「本次监视」across two lines
+   mid-word. Each chip keeps its own width and the row wraps instead. */
+.ranges{display:flex;flex-wrap:wrap;gap:3px;padding:7px 8px;border-bottom:1px solid #dcd9cf}
+.ranges a{flex:0 1 auto;white-space:nowrap;text-align:center;padding:4px 7px;
+ font-size:10px;color:#6a6963;text-decoration:none;border-radius:4px;letter-spacing:.02em}
 .ranges a:hover{background:#e7e4da}
 .ranges a.on{background:#1c1c1a;color:#f0efeb}
 .sidefoot{padding:9px 16px 12px;border-top:1px solid #dcd9cf;font-size:9px;
