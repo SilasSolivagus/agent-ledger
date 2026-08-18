@@ -111,6 +111,20 @@ function summarise(content: unknown, limit = 160): string {
   return parts.join(' ').replace(/\s+/g, ' ').trim().slice(0, limit)
 }
 
+/**
+ * The untruncated text behind a summary, for the details panel.
+ *
+ * Capped well above a readable paragraph but far below a transcript: the page
+ * carries no script and no virtualisation, so an uncapped tool result would
+ * put a megabyte of build output into one row.
+ */
+const DETAIL_LIMIT = 4000
+
+function detail(content: unknown): string | undefined {
+  const text = summarise(content, DETAIL_LIMIT)
+  return text === '' ? undefined : text
+}
+
 /** One line of what a tool returned. */
 function resultSummary(output: unknown, limit = 90): string {
   if (typeof output !== 'string') return summarise(output, limit)
@@ -194,7 +208,14 @@ export async function parseClaudeFile(file: TranscriptFile): Promise<Session | u
           const id = typeof record?.['tool_use_id'] === 'string' ? record['tool_use_id'] : ''
           const at2 = awaiting.get(id)
           const target = at2 === undefined ? undefined : events[at2]
-          if (target !== undefined) target.result = summarise(record?.['content'], 90)
+          if (target !== undefined) {
+            target.result = summarise(record?.['content'], 90)
+            target.resultFull = detail(record?.['content'])
+            if (record?.['is_error'] === true) target.isError = true
+            // The call and its result are two recorded facts, so the interval
+            // between them is the tool's real duration — not an inference.
+            if (at > target.at) { target.durationMs = at - target.at; target.timing = 'measured' }
+          }
           awaiting.delete(id)
         }
         continue
@@ -202,7 +223,7 @@ export async function parseClaudeFile(file: TranscriptFile): Promise<Session | u
       const said = summarise(content)
       if (said === '') continue
       turn += 1
-      events.push({ kind: 'user', at, turn, text: said })
+      events.push({ kind: 'user', at, turn, text: said, full: detail(content) })
       continue
     }
 
@@ -228,16 +249,37 @@ export async function parseClaudeFile(file: TranscriptFile): Promise<Session | u
     const content = Array.isArray(message['content']) ? message['content'] : []
     const said = summarise(content)
     if (said !== '') {
-      events.push({ kind: 'assistant', at, turn: Math.max(1, turn), text: said })
+      const event: LedgerEvent = { kind: 'assistant', at, turn: Math.max(1, turn), text: said }
+      const full = detail(content)
+      if (full !== undefined) event.full = full
+      if (usage !== undefined) event.usage = usage
+      if (typeof message['model'] === 'string') event.model = message['model']
+      // Claude Code attributes records to the skill and subagent that produced
+      // them. Nothing else in either transcript answers "which skill spent
+      // this", so it is worth carrying even though only one agent has it.
+      if (typeof row['attributionSkill'] === 'string') event.skill = row['attributionSkill']
+      if (typeof row['attributionAgent'] === 'string') event.subagent = row['attributionAgent']
+      if (row['isSidechain'] === true) event.sidechain = true
+      // Nothing records when the model started, so the distance back to the
+      // previous record is the only figure available — and it also contains
+      // the tool that ran and the person who read the answer.
+      if (previousAt > 0 && at > previousAt) { event.durationMs = at - previousAt; event.timing = 'gap' }
+      events.push(event)
     }
     for (const block of content) {
       const record = asRecord(block)
       if (record?.['type'] !== 'tool_use') continue
       const name = typeof record['name'] === 'string' ? record['name'] : 'unknown'
-      events.push({
+      const call: LedgerEvent = {
         kind: 'tool', at, turn: Math.max(1, turn), tool: name,
         text: toolArgSummary(name, record['input']),
-      })
+      }
+      if (typeof row['attributionSkill'] === 'string') call.skill = row['attributionSkill']
+      if (typeof row['attributionAgent'] === 'string') call.subagent = row['attributionAgent']
+      if (row['isSidechain'] === true) call.sidechain = true
+      const args = JSON.stringify(record['input'] ?? {}, null, 2)
+      if (args !== '{}') call.full = args.slice(0, DETAIL_LIMIT)
+      events.push(call)
       const id = record['id']
       if (typeof id === 'string') awaiting.set(id, events.length - 1)
     }
@@ -270,7 +312,11 @@ export async function parseClaudeFile(file: TranscriptFile): Promise<Session | u
     previousAt = at
   }
 
-  if (steps.length === 0) return undefined
+  // Events without steps is a real state, not an empty file: you opened a
+  // session and said something, and the first model request has not landed —
+  // or failed outright. A live board that waits for a step shows nothing at
+  // exactly the moment you most want to see something.
+  if (steps.length === 0 && events.length === 0) return undefined
   const session: Session = {
     id: file.id,
     agent: 'claude-code',
@@ -322,6 +368,7 @@ export async function parseCodexFile(file: TranscriptFile): Promise<Session | un
   let cwd: string | undefined
   let gitBranch: string | undefined
   let turn = 0
+  let lastAssistant = -1
   // Outputs arrive as their own frames further down, keyed by call_id.
   const awaiting = new Map<string, number>()
 
@@ -359,18 +406,27 @@ export async function parseCodexFile(file: TranscriptFile): Promise<Session | un
     // counting those as turns inflates every per-turn figure. This event is
     // emitted when a human presses enter, in every CLI version seen so far.
     if (kind === 'user_message') {
-      const said = typeof payload?.['message'] === 'string'
-        ? payload['message'].replace(/\s+/g, ' ').trim().slice(0, 160)
-        : ''
+      const raw = typeof payload?.['message'] === 'string' ? payload['message'] : ''
+      const said = raw.replace(/\s+/g, ' ').trim().slice(0, 160)
       if (said === '') continue
       turn += 1
-      events.push({ kind: 'user', at, turn, text: said })
+      events.push({ kind: 'user', at, turn, text: said, full: detail(raw) })
       continue
     }
 
     if (kind === 'message' && payload?.['role'] === 'assistant') {
       const said = summarise(payload['content'])
-      if (said !== '') events.push({ kind: 'assistant', at, turn: Math.max(1, turn), text: said })
+      if (said !== '') {
+        const event: LedgerEvent = { kind: 'assistant', at, turn: Math.max(1, turn), text: said }
+        const full = detail(payload['content'])
+        if (full !== undefined) event.full = full
+        event.model = model
+        if (previousAt > 0 && at > previousAt) { event.durationMs = at - previousAt; event.timing = 'gap' }
+        // The usage for this request arrives on the token_count frame that
+        // closes the step, so the frame attaches itself back here.
+        lastAssistant = events.length
+        events.push(event)
+      }
       continue
     }
 
@@ -382,18 +438,21 @@ export async function parseCodexFile(file: TranscriptFile): Promise<Session | un
       // `function_call` serialises arguments as JSON; `custom_tool_call` sends
       // a raw body — apply_patch's is the patch itself.
       const args = payload?.['arguments']
-      const body = payload?.['input']
+      const rawBody = payload?.['input']
       pendingCalls.push({
         name,
-        argBytes: estimateTokens(typeof args === 'string' ? args : typeof body === 'string' ? body : ''),
+        argBytes: estimateTokens(typeof args === 'string' ? args : typeof rawBody === 'string' ? rawBody : ''),
       })
       let what = ''
       if (typeof args === 'string') {
         try { what = toolArgSummary(name, JSON.parse(args)) } catch { /* keep it blank */ }
-      } else if (typeof body === 'string') {
-        what = body.split('\n').find(line => line.trim() !== '')?.slice(0, 120) ?? ''
+      } else if (typeof rawBody === 'string') {
+        what = rawBody.split('\n').find(line => line.trim() !== '')?.slice(0, 120) ?? ''
       }
-      events.push({ kind: 'tool', at, turn: Math.max(1, turn), tool: name, text: what })
+      const call: LedgerEvent = { kind: 'tool', at, turn: Math.max(1, turn), tool: name, text: what }
+      const body = typeof args === 'string' ? args : typeof rawBody === 'string' ? rawBody : ''
+      if (body !== '') call.full = body.slice(0, DETAIL_LIMIT)
+      events.push(call)
       const id = payload?.['call_id']
       if (typeof id === 'string') awaiting.set(id, events.length - 1)
       continue
@@ -403,7 +462,14 @@ export async function parseCodexFile(file: TranscriptFile): Promise<Session | un
       const id = payload?.['call_id']
       const seat = typeof id === 'string' ? awaiting.get(id) : undefined
       const target = seat === undefined ? undefined : events[seat]
-      if (target !== undefined) target.result = resultSummary(payload?.['output'])
+      if (target !== undefined) {
+        target.result = resultSummary(payload?.['output'])
+        target.resultFull = detail(payload?.['output'])
+        if (/exit_code\D+[1-9]|Process exited with code [1-9]/.test(String(payload?.['output'] ?? ''))) {
+          target.isError = true
+        }
+        if (at > target.at) { target.durationMs = at - target.at; target.timing = 'measured' }
+      }
       if (typeof id === 'string') awaiting.delete(id)
       continue
     }
@@ -433,12 +499,19 @@ export async function parseCodexFile(file: TranscriptFile): Promise<Session | un
       calls: pendingCalls,
     }
     if (previousAt > 0 && at > previousAt) step.durationMs = at - previousAt
+    const owner = lastAssistant >= 0 ? events[lastAssistant] : undefined
+    if (owner !== undefined && owner.usage === undefined) owner.usage = step.usage
+    lastAssistant = -1
     steps.push(step)
     pendingCalls = []
     previousAt = at
   }
 
-  if (steps.length === 0) return undefined
+  // Events without steps is a real state, not an empty file: you opened a
+  // session and said something, and the first model request has not landed —
+  // or failed outright. A live board that waits for a step shows nothing at
+  // exactly the moment you most want to see something.
+  if (steps.length === 0 && events.length === 0) return undefined
   const session: Session = {
     id: file.id,
     agent: 'codex',

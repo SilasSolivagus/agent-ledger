@@ -8,7 +8,8 @@
  * @module
  */
 
-import type { LedgerEvent, Session } from './types.js'
+import type { LedgerEvent, Session, Timing } from './types.js'
+import { agentLabel, AGENT_VENDOR, type AgentKind } from './types.js'
 import { summarise, averageStatic, byAgent } from './summary.js'
 import { profiles, type AgentProfile } from './profile.js'
 
@@ -32,8 +33,21 @@ export function chooseUnit(max: number): number {
     .find(s => s >= raw) ?? 100000
 }
 
-/** Horizontal countable rows. */
-function tickChart(rows: readonly { label: string; value: number }[], noun: string, width = 800): string {
+/**
+ * Horizontal countable rows — the house chart.
+ *
+ * Every row keeps at least one mark, so a row worth a thousandth of the
+ * largest still reads as present rather than absent. The value label takes a
+ * formatter because the quantity is not always a plain count: rounding
+ * milliseconds into seconds to fit a "seconds" unit is what turned 230 ms
+ * into a printed zero once.
+ */
+function tickChart(
+  rows: readonly { label: string; value: number }[],
+  noun: string,
+  format: (v: number) => string = v => v.toLocaleString('en-US'),
+  width = 800,
+): string {
   if (rows.length === 0) return '<p class="empty">Nothing recorded.</p>'
   const max = Math.max(...rows.map(r => r.value), 1)
   const unit = chooseUnit(max)
@@ -51,55 +65,25 @@ function tickChart(rows: readonly { label: string; value: number }[], noun: stri
     for (let k = 0; k < marks; k += 1) {
       const x = (gutter + k * px + px / 2).toFixed(1)
       const h = 9 + jitter(k + 1, i + 2) * 6
-      parts.push(`<line x1="${x}" y1="${y + 8}" x2="${x}" y2="${(y + 8 - h).toFixed(1)}" class="tick" opacity="${(0.5 + jitter(k + 3, i + 5) * 0.5).toFixed(2)}"/>`)
-      if (k % 5 === 4) parts.push(`<circle cx="${x}" cy="${y + 12}" r="0.85" class="fifth"/>`)
+      parts.push(`<line x1="${x}" y1="${y + 8}" x2="${x}" y2="${(y + 8 - h).toFixed(1)}" class="tick fade"`
+        + ` opacity="${(0.5 + jitter(k + 3, i + 5) * 0.5).toFixed(2)}"`
+        + ` style="animation-delay:${(i * 0.1 + k * 0.012).toFixed(3)}s"/>`)
+      if (k % 5 === 4) {
+        parts.push(`<circle cx="${x}" cy="${y + 12}" r="0.85" class="fifth fade"`
+          + ` style="animation-delay:${(i * 0.1 + k * 0.012).toFixed(3)}s"/>`)
+      }
     }
-    parts.push(`<text x="${(gutter + marks * px + 9).toFixed(1)}" y="${y + 3.5}" class="val">${row.value.toLocaleString('en-US')}</text>`)
+    parts.push(`<text x="${(gutter + marks * px + 9).toFixed(1)}" y="${y + 3.5}" class="val fade"`
+      + ` style="animation-delay:${(0.25 + i * 0.1).toFixed(3)}s">${esc(format(row.value))}</text>`)
   })
-  parts.push(`<text x="${width / 2}" y="${height - 8}" class="unit" text-anchor="middle">一格 = ${unit.toLocaleString('en-US')} ${noun} · 每五格一个点</text>`)
-  return `<svg viewBox="0 0 ${width} ${height}" role="img">${parts.join('')}</svg>`
-}
-
-/**
- * The trajectory: one hairline per step, marks in the lane of what it produced.
- *
- * This is the view neither Claude Code nor Codex offers — you can see the
- * shape of a session before reading a single number.
- */
-function trajectory(session: Session): string {
-  const steps = session.steps
-  if (steps.length === 0) return '<p class="empty">No steps.</p>'
-  const width = 900, X0 = 92, W = width - X0 - 24
-  const px = W / steps.length
-  const x = (i: number): number => X0 + i * px + px / 2
-  const LANE = { model: 92, tools: 168 }
-  const parts: string[] = []
-
-  for (const [name, y] of [['MODEL', LANE.model], ['TOOLS', LANE.tools]] as const) {
-    parts.push(`<line x1="${X0}" y1="${y}" x2="${X0 + W}" y2="${y}" class="rule"/>`)
-    parts.push(`<text x="${X0 - 12}" y="${y + 3}" class="lbl" text-anchor="end">${name}</text>`)
-  }
-
-  const maxDur = Math.max(...steps.map(s => s.durationMs ?? 0), 1)
-  steps.forEach((step, i) => {
-    const cx = x(i)
-    parts.push(`<line x1="${cx.toFixed(1)}" y1="64" x2="${cx.toFixed(1)}" y2="196" class="hair"/>`)
-    // Model mark: radius carries how long the request took.
-    const r = 2 + 3.4 * Math.sqrt((step.durationMs ?? 0) / maxDur)
-    parts.push(`<circle cx="${cx.toFixed(1)}" cy="${LANE.model}" r="${r.toFixed(2)}" class="dot"/>`)
-    if (step.error !== undefined) {
-      parts.push(`<line x1="${(cx - 3.4).toFixed(1)}" y1="${LANE.model - 3.4}" x2="${(cx + 3.4).toFixed(1)}" y2="${LANE.model + 3.4}" class="err"/>`)
-    }
-    step.calls.forEach((_, k) => {
-      const ty = LANE.tools - 2.6 + k * 7.6
-      parts.push(`<rect x="${(cx - 2.6).toFixed(1)}" y="${ty.toFixed(1)}" width="5.2" height="5.2" class="sq" opacity="${(0.5 + jitter(i + k + 2, 7) * 0.5).toFixed(2)}"/>`)
-    })
-  })
-
-  const calls = steps.reduce((t, s) => t + s.calls.length, 0)
-  parts.push(`<text x="${X0}" y="228" class="note">${steps.length} 步 · ${calls} 次工具调用 · 圆点大小 = 该步耗时</text>`)
-  parts.push(`<text x="${X0 + W}" y="244" class="unit" text-anchor="end">ONE HAIRLINE = ONE STEP · ONE SQUARE = ONE TOOL CALL</text>`)
-  return `<svg viewBox="0 0 ${width} 256" role="img">${parts.join('')}</svg>`
+  // A row worth less than one mark still gets one, so two values three orders
+  // apart can draw the same length. The label is exact; the bar is not, and
+  // the chart has to say which.
+  const floored = rows.filter(r => r.value > 0 && Math.round(r.value / unit) < 1).length
+  parts.push(`<text x="${width / 2}" y="${height - 8}" class="unit" text-anchor="middle">一格 = ${
+    esc(format(unit))}${noun === '' ? '' : ` ${noun}`} · 每五格一个点${
+    floored === 0 ? '' : ` · ${floored} 行不足一格，按一格画，长度不可比，读数字`}</text>`)
+  return `<svg viewBox="0 0 ${width} ${height}" width="${width}" height="${height}" role="img">${parts.join('')}</svg>`
 }
 
 /** Chinese labels for the five event kinds. */
@@ -107,43 +91,283 @@ const KIND_LABEL: Readonly<Record<LedgerEvent['kind'], string>> = {
   user: '你', assistant: '模型', tool: '工具', system: '系统', context: '上下文',
 }
 
+
+/** `1,204 ms` / `2.4 s`, or a dash when nothing was recorded. */
+function ms(value: number | undefined): string {
+  if (value === undefined) return '—'
+  return value >= 10000 ? `${(value / 1000).toFixed(1)} s` : `${Math.round(value).toLocaleString('en-US')} ms`
+}
+
 /**
- * The ledger: one row per thing that happened, turns kept apart.
+ * A row's own text, expandable to the untruncated original when there is one.
  *
- * This is the half a timeline cannot give you. The shape of a session is
- * visible in the trajectory above; what it was actually doing is only legible
- * line by line.
+ * The originals dominate the page weight — one export of forty sessions runs
+ * to megabytes with them and a fraction of that without. A server can afford
+ * them because it renders one session at a time; a file that holds every
+ * session cannot, so the export leaves them out unless asked.
  */
-function ledger(events: readonly LedgerEvent[], cap = 120): string {
-  if (events.length === 0) return ''
-  const shown = events.slice(0, cap)
-  const rows: string[] = []
+function cell(summary: string, full: string | undefined, details: boolean, prefix = ''): string {
+  const head = `${prefix}${esc(summary)}`
+  if (!details || full === undefined || full.trim() === summary.trim()) return head
+  return `<details><summary>${head}</summary><pre>${esc(full)}</pre></details>`
+}
+
+/**
+ * The trajectory: one row per operation, with what it did on the left and
+ * when it happened on the right.
+ *
+ * This is the view neither product offers. A transcript can be scrolled but
+ * not scanned: you cannot see that one tool call took four minutes, or that a
+ * turn spent nine steps talking before it touched anything.
+ * @param session - the session to lay out.
+ * @param cap - most rows to draw.
+ * @param zoom - one of {@link ZOOMS}; how many pixels one second is worth.
+ * @param compress - drop the stretches where nothing ran; see {@link project}.
+ * @param details - whether rows expand to the untruncated original.
+ * @returns the table, or a note when the source recorded no events.
+ */
+
+/** The badge in the leftmost column, the way a log marks its lines. */
+const BADGE: Readonly<Record<LedgerEvent['kind'], string>> = {
+  user: 'USER', assistant: 'MODEL', tool: 'TOOL', system: 'SYS', context: 'CTX',
+}
+
+/**
+ * How many pixels one second of real time is worth.
+ *
+ * Naming the scale is what makes the timeline readable at all. Every earlier
+ * attempt normalised each turn to the full width, which meant a bar's length
+ * only meant something next to its own neighbours — the note under the chart
+ * had to say "条只在同一轮内可比", which is close to saying it means nothing.
+ * A fixed number of pixels per second makes every bar on the page, in every
+ * turn and every session, the same kind of thing.
+ *
+ * The axis then gets as wide as the work actually took, and the page scrolls
+ * sideways. That is the honest shape: an hour of work is an hour wide.
+ */
+export const ZOOMS: Readonly<Record<string, { px: number; label: string }>> = {
+  // `fit` is the one scale that is not a scale: it stretches whatever this
+  // session took to the width of the page. Bars stay comparable to each other
+  // inside the view and stop being comparable to anything outside it, which
+  // is why it says so on the chart rather than quietly reading like the rest.
+  fit: { px: 0, label: '铺满' },
+  wide: { px: 4, label: '疏' },
+  mid: { px: 24, label: '中' },
+  close: { px: 120, label: '密' },
+}
+
+/** Viewbox width a `fit` axis is stretched to. */
+const FIT_WIDTH = 1200
+
+/** A round tick interval that lands the labels roughly 90px apart. */
+function tickSeconds(px: number): number {
+  const raw = 90 / px
+  return [0.1, 0.25, 0.5, 1, 2, 5, 10, 15, 30, 60, 120, 300, 600, 1800, 3600]
+    .find(step => step >= raw) ?? 7200
+}
+
+/** `1.5s` / `2m30s` / `1h04m`, for an axis label. */
+function axisLabel(seconds: number): string {
+  if (seconds < 1) return `${seconds.toFixed(1)}s`
+  if (seconds < 60) return `${String(Math.round(seconds))}s`
+  if (seconds < 3600) {
+    const m = Math.floor(seconds / 60)
+    const r = Math.round(seconds % 60)
+    return r === 0 ? `${String(m)}m` : `${String(m)}m${String(r).padStart(2, '0')}`
+  }
+  const h = Math.floor(seconds / 3600)
+  return `${String(h)}h${String(Math.round((seconds % 3600) / 60)).padStart(2, '0')}m`
+}
+
+/** One record projected onto the timeline, in milliseconds from the origin. */
+interface Span { start: number; end: number; index: number; lane: number; event: LedgerEvent }
+
+/**
+ * Remove the stretches where nothing was running, keep every operation's real
+ * length.
+ *
+ * This is the projection DeepSeek Harness uses, and the distinction is the
+ * whole point. Laying operations end to end — which is what an earlier version
+ * here did — destroys the one thing a bar length is for: a two-second tool
+ * call must be twice the bar of a one-second one. Deleting only the idle
+ * between operations keeps that intact while collapsing the ten minutes of
+ * nobody-typing that would otherwise squash every bar to a hairline.
+ *
+ * The cost is that the axis is no longer continuous, so no ruler is drawn in
+ * this projection; turn boundaries mark position instead.
+ */
+function project(events: readonly LedgerEvent[], compress: boolean): Span[] {
+  const raw: Span[] = events.map((event, index) => {
+    const own = event.timing === 'measured' ? event.durationMs ?? 0 : 0
+    return {
+      start: event.at,
+      end: event.at + own,
+      index,
+      lane: event.kind === 'user' ? 0 : event.kind === 'tool' ? 2 : 1,
+      event,
+    }
+  })
+  if (!compress) return raw
+
+  const removed = new Map<Span, number>()
+  let idle = 0
+  let covered: number | undefined
+  for (const span of [...raw].sort((a, b) => a.start - b.start || a.end - b.end)) {
+    if (covered !== undefined && span.start > covered) idle += span.start - covered
+    removed.set(span, idle)
+    covered = covered === undefined ? span.end : Math.max(covered, span.end)
+  }
+  return raw.map(span => {
+    const offset = removed.get(span) ?? 0
+    return { ...span, start: span.start - offset, end: span.end - offset }
+  })
+}
+
+/**
+ * The timeline: three lanes at a stated scale, every block a link to its row.
+ *
+ * Clicking a block jumps to the record it stands for. DeepSeek Harness does
+ * this with a select callback; the same thing without script is an anchor,
+ * and the row it lands on highlights itself through `:target`.
+ */
+function timeline(events: readonly LedgerEvent[], px: number, compress: boolean): string {
+  const spans = project(events, compress)
+  const t0 = Math.min(...spans.map(s => s.start))
+  const end = Math.max(...spans.map(s => s.end))
+  const seconds = Math.max((end - t0) / 1000, 0.5)
+  const X0 = 40
+  const fit = px === 0
+  const scale = fit ? (FIT_WIDTH - X0 - 24) / seconds : px
+  const width = X0 + seconds * scale + 24
+  const LANE_H = 11, GAP = 3, TOP = 15
+  const names = ['输入', '模型', '工具']
+  const bottom = TOP + names.length * (LANE_H + GAP)
+  const at = (value: number): number => X0 + ((value - t0) / 1000) * scale
+
+  const parts: string[] = []
+  if (compress) {
+    // Time is not continuous here, so a ruler would lie. Turn boundaries are
+    // the honest landmark.
+    let turn = 0
+    for (const span of spans) {
+      if (span.event.turn === turn) continue
+      turn = span.event.turn
+      const x = at(span.start)
+      parts.push(`<line x1="${x.toFixed(1)}" y1="10" x2="${x.toFixed(1)}" y2="${bottom}" class="bound"/>`)
+      parts.push(`<text x="${(x + 3).toFixed(1)}" y="7" class="tick">第${turn}轮</text>`)
+    }
+  } else {
+    const step = tickSeconds(scale)
+    for (let t = 0; t <= seconds + step; t += step) {
+      const x = X0 + t * scale
+      parts.push(`<line x1="${x.toFixed(1)}" y1="10" x2="${x.toFixed(1)}" y2="${bottom}" class="grid"/>`)
+      parts.push(`<text x="${(x + 3).toFixed(1)}" y="7" class="tick">${axisLabel(t)}</text>`)
+    }
+  }
+  names.forEach((name, i) => {
+    const y = TOP + i * (LANE_H + GAP)
+    parts.push(`<rect x="${X0}" y="${y}" width="${(seconds * scale).toFixed(1)}" height="${LANE_H}" class="lane"/>`)
+    parts.push(`<text x="${X0 - 7}" y="${y + LANE_H - 2.5}" class="lname" text-anchor="end">${name}</text>`)
+  })
+  for (const span of spans) {
+    const y = TOP + span.lane * (LANE_H + GAP)
+    const x = at(span.start)
+    const measured = span.event.timing === 'measured'
+    const w = measured ? Math.max(((span.end - span.start) / 1000) * scale, 1.5) : 1.6
+    const cls = span.event.isError === true ? 'op err' : measured ? 'op real' : 'op mark'
+    const what = span.event.kind === 'tool' ? span.event.tool ?? '' : KIND_LABEL[span.event.kind]
+    parts.push(`<a href="#r${String(span.index + 1)}"><rect x="${x.toFixed(2)}" y="${y}"`
+      + ` width="${w.toFixed(2)}" height="${LANE_H}" class="${cls}">`
+      + `<title>#${String(span.index + 1)} ${esc(what)} · ${ms(span.event.durationMs)}</title>`
+      + `</rect></a>`)
+  }
+  const height = bottom + 2
+  return `<div class="tlwrap"><svg viewBox="0 0 ${width.toFixed(0)} ${height}"`
+    + `${fit ? '' : ` width="${width.toFixed(0)}" height="${height}"`}`
+    + ` class="tl${fit ? ' fit' : ''}" role="img">${parts.join('')}</svg></div>`
+}
+
+export function trajectoryTable(
+  session: Session,
+  cap = 600,
+  details = true,
+  tail = false,
+  zoom = 'mid',
+  compress = true,
+): string {
+  const all = session.events ?? []
+  // A live board reads from the end: the interesting row is the one that just
+  // landed. Taking the first `cap` rows would freeze the board on the opening
+  // of the session and never show what is happening now.
+  const events = tail ? all.slice(Math.max(0, all.length - cap)) : all.slice(0, cap)
+  if (events.length === 0) return '<p class="empty">这份记录还没有可显示的事件。</p>'
+
+  const measured = events.filter(e => e.timing === 'measured')
+  const longest = Math.max(...measured.map(e => e.durationMs ?? 0), 0)
+
+  // A turn boundary is one thin line, the way DeepSeek Harness marks it —
+  // not a header. Collapsing turns would mean one table per turn, and that
+  // fights the density this view exists for.
   let turn = 0
-  let n = 0
-  for (const event of shown) {
+  const rows = events.flatMap((event, i) => {
+    const mark: string[] = []
     if (event.turn !== turn) {
       turn = event.turn
-      rows.push(`<tr class="turnrow"><td colspan="4">第 ${turn} 轮</td></tr>`)
+      mark.push(`<tr class="turnmark"><td></td><td colspan="4">第 ${turn} 轮</td></tr>`)
     }
-    n += 1
-    const label = KIND_LABEL[event.kind]
-    const what = event.kind === 'tool'
-      ? `<span class="tool">${esc(event.tool ?? '')}</span>${event.text === '' ? '' : ` · ${esc(event.text)}`}`
+    // Call and result share one line, the way a log does. Two wrapping columns
+    // turn one record into four lines of screen and put a quarter as much of
+    // the session in front of you.
+    const head = event.kind === 'tool'
+      ? `<b>${esc(event.tool ?? '')}</b> ${esc(event.text)}`
       : esc(event.text)
-    // Only the two bands that earn a mark get a row class.
-    const band = event.kind === 'user' ? ' class="r-user"'
-      : event.kind === 'tool' ? ' class="r-tool"' : ''
-    rows.push(`<tr${band}><td class="n">${String(n).padStart(2, '0')}</td>`
-      + `<td class="kind k-${event.kind}">${label}</td>`
-      + `<td>${what}</td>`
-      + `<td class="res">${event.result === undefined ? '' : esc(event.result)}</td></tr>`)
-  }
-  const more = events.length > cap
-    ? `<div class="src">共 ${events.length} 条，此处显示前 ${cap} 条</div>`
-    : ''
-  return `<table><thead><tr><th style="width:44px">#</th><th style="width:58px">类型</th>`
-    + `<th>发生了什么</th><th style="width:26%">结果</th></tr></thead>`
-    + `<tbody>${rows.join('')}</tbody></table>${more}`
+    const tail2 = event.result === undefined ? ''
+      : `<span class="arrow"> → </span><span class="ret">${esc(event.result)}</span>`
+    const line = `${head}${tail2}`
+    const full = [event.full, event.resultFull].filter(v => v !== undefined).join('\n\n→\n\n')
+    const body = details && full !== ''
+      ? `<details><summary class="line">${line}</summary><pre>${esc(full)}</pre></details>`
+      : `<div class="line">${line}</div>`
+    // The id is what the timeline block above links to.
+    mark.push(`<tr id="r${String(i + 1)}" class="k-${event.kind}${event.isError === true ? ' err' : ''}">`
+      + `<td class="n">${String(i + 1).padStart(3, '0')}</td>`
+      + `<td class="badge">${BADGE[event.kind]}</td>`
+      + `<td class="say">${body}</td>`
+      + `<td class="num t-${event.timing ?? 'none'}">${ms(event.durationMs)}</td>`
+      + `<td class="num tok">${event.usage === undefined ? '' : event.usage.output.toLocaleString('en-US')}</td>`
+      + `</tr>`)
+    return mark
+  })
+
+  const px = (ZOOMS[zoom] ?? ZOOMS['mid'] as { px: number }).px
+  // A `fit` axis has no fixed scale, so the note reports what it worked out to
+  // and says plainly that the number does not travel to another session.
+  const spanSeconds = Math.max((Math.max(...events.map(e =>
+    e.at + (e.timing === 'measured' ? e.durationMs ?? 0 : 0)))
+    - Math.min(...events.map(e => e.at))) / 1000, 0.5)
+  const effective = px === 0 ? (FIT_WIDTH - 64) / spanSeconds : px
+  const keep = (extra: string): string => `?zoom=${zoom}&amp;idle=${compress ? 'off' : 'on'}${extra}`
+  const scale = (Object.keys(ZOOMS)).map(key => `<a href="?zoom=${key}&amp;idle=${
+    compress ? 'off' : 'on'}"${key === zoom ? ' class="on"' : ''}>${
+    esc((ZOOMS[key] as { label: string }).label)}</a>`).join('')
+  const idle = `<a href="${keep('')}">${compress ? '看真实间隔' : '压缩空闲'}</a>`
+  const note = (px === 0
+    ? `铺满本页 · 1 秒 ≈ ${effective.toFixed(1)} px —— 这一档随会话长短伸缩，条长只在本页内可比，换个会话就不能比`
+    : `1 秒 = ${px} px`)
+    + `${compress ? ' · 已删掉没有任何操作在跑的空档，操作本身的长度是真的' : ' · 真实时间轴'}`
+    + ` · 点轴上的块跳到那一行 · 实测 ${measured.length} 条，最长 ${ms(longest)}`
+    + ` · 模型与你的发言只打刻度，因为那段时间已经由它下面的工具条画过了`
+  const dropped = all.length - events.length
+  const more = dropped === 0 ? ''
+    : ` · <a href="/s/${encodeURIComponent(session.id)}">更早的 ${dropped} 条</a>`
+  return `<div class="tlhead"><span class="tlunit">${
+    px === 0 ? `铺满 · 1 秒 ≈ ${effective.toFixed(1)} px` : `1 秒 = ${px} px`}</span>
+  <span class="zooms">${idle}${scale}</span></div>
+${timeline(events, px, compress)}
+<table class="log"><colgroup><col style="width:38px"/><col style="width:64px"/><col/>`
+    + `<col style="width:72px"/><col style="width:56px"/></colgroup>`
+    + `<tbody>${rows.join('')}</tbody></table>`
+    + `<div class="src">${esc(note)}${more}</div>`
 }
 
 const STYLE = `*{box-sizing:border-box}
@@ -198,6 +422,240 @@ tr.r-user td:nth-child(3){font-weight:600}
 .k-user{color:#1c1c1a}.k-assistant{color:#6b6a63}.k-tool{color:#8a6a2f}
 .k-system,.k-context{color:#a3a29a}
 td.res{color:#6b6a63;font-size:11px}
+/* The waterfall. A bar's length is the operation's own time — measured bars
+   are filled, inferred ones are outlined, because the two are not the same
+   kind of fact and must not average into one another by looking alike. */
+/* The log. One record is one line and it does not wrap: two wrapping columns
+   turn a record into four lines of screen and put a quarter as much of the
+   session in front of you. Overflow is clipped, and the full text is one
+   click away rather than always occupying room. */
+table.log{table-layout:fixed;width:100%;border-collapse:collapse;margin-top:10px}
+table.log td{padding:1.5px 8px 1.5px 0;border:0;vertical-align:top;
+ font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px;line-height:1.65}
+table.log td.n{color:#b4b1a6;text-align:right;padding-right:10px;font-variant-numeric:tabular-nums}
+table.log td.badge{font-size:9px;font-weight:700;letter-spacing:.08em;color:${T.muted};
+ padding-top:3px}
+table.log td.say{overflow:hidden}
+table.log .line{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+table.log td.num{text-align:right;font-variant-numeric:tabular-nums;font-size:10.5px;padding-top:1px}
+table.log td.tok{color:#8f8e88}
+table.log tr.turnmark td{padding:9px 0 3px;font-family:Inter,-apple-system,sans-serif;
+ font-size:9px;font-weight:700;letter-spacing:.12em;color:${T.paperInk};
+ border-bottom:1px solid #d6d3c8}
+table.log .arrow{color:#b4b1a6}
+table.log .ret{color:#7d7b72}
+table.log tr.k-user td.badge{color:#1c1c1a}
+table.log tr.k-user td.say{font-weight:600}
+table.log tr.k-user{background:#e7e5dd}
+table.log tr.k-tool td.badge{color:#8a6a2f}
+table.log tr.k-tool b{color:#7a5c25;font-weight:700}
+table.log tr.k-assistant td.say{color:#4a493f}
+table.log tr.err td.say{color:#a33}
+/* Landing here from a timeline block. */
+table.log tr:target td{background:#ded9c6}
+table.log tr:target td.say{font-weight:700}
+table.log details summary.line{cursor:pointer;list-style:none}
+table.log details summary::-webkit-details-marker{display:none}
+table.log details[open] summary.line{white-space:normal;font-weight:600}
+table.log pre{margin:4px 0 6px;padding:8px 10px;background:#e7e5dd;border-radius:5px;
+ font-size:10.5px;line-height:1.55;white-space:pre-wrap;word-break:break-word;
+ max-height:300px;overflow:auto;color:#3a3a34}
+/* Three lanes across the full width — the shape of the whole stretch of work. */
+/* Real elapsed time at a stated scale. The axis is as wide as the work took,
+   so the strip scrolls sideways rather than squeezing an hour into 900px. */
+.tlhead{display:flex;align-items:baseline;gap:14px;padding:2px 0 5px}
+.tlunit{font-size:9.5px;font-weight:600;letter-spacing:.06em;color:#6b6a63}
+.zooms{display:flex;gap:8px;margin-left:auto}
+.zooms a{font-family:inherit;font-size:10px;font-weight:700;color:${T.muted};
+ border-bottom:none;padding:0 4px}
+.zooms a.on{color:${T.paperInk};border-bottom:2px solid ${T.paperInk}}
+.tlwrap{overflow-x:auto;overflow-y:hidden;background:#f3f2ed;border-radius:5px;
+ padding:2px 0 4px;border:1px solid #e2e0d7}
+/* Entrance animation, per mono-tokens.js: quick in, quick stop, no bounce.
+   Pure CSS — the delays are inline per mark, so the stagger needs no script.
+
+   With script running (html.js) the marks hold still until their card scrolls
+   into view, and a click replays that card — the reveal behaviour the token
+   file specifies. Without script they play on load, which is right for a file
+   that is opened once. */
+.js .pop,.js .fade,.js .draw{animation:none}
+.js .in .pop{animation:pop .5s cubic-bezier(.2,.7,.3,1.3) both}
+.js .in .fade{animation:fade .9s ease both}
+.js .in .draw{animation:draw 1s cubic-bezier(.4,0,.2,1) both}
+.pop{transform-box:fill-box;transform-origin:center;
+ animation:pop .5s cubic-bezier(.2,.7,.3,1.3) both}
+@keyframes pop{from{transform:scale(0)}to{transform:none}}
+.fade{animation:fade .9s ease both}
+@keyframes fade{from{opacity:0}}
+.draw{animation:draw 1s cubic-bezier(.4,0,.2,1) both}
+@keyframes draw{from{stroke-dashoffset:var(--len)}to{stroke-dashoffset:0}}
+@media (prefers-reduced-motion:reduce){
+  .pop,.fade{animation:none}
+  .draw{animation:none;stroke-dashoffset:0}
+}
+svg.tl{display:block;width:auto;height:auto;max-width:none;flex:none}
+svg.tl.fit{width:100%;height:auto}
+/* The summary. Same card vocabulary as everything else; the only new shapes
+   are a split bar and a field of countable dots. */
+.digesthead{display:flex;align-items:baseline;gap:12px;padding-bottom:8px;
+ border-bottom:2px solid ${T.paperInk};margin-bottom:16px}
+.digesthead .who{font-size:15px;font-weight:800;letter-spacing:-.01em}
+.digesthead .dim{font-size:10.5px;color:#6b6a63;margin-left:auto}
+.main .card{margin-bottom:16px}
+.split{display:flex;height:34px;border-radius:5px;overflow:hidden;margin:4px 0 2px}
+.seg{display:flex;align-items:center;padding:0 10px;font-size:10px;white-space:nowrap;
+ overflow:hidden;min-width:0}
+.seg b{font-weight:700;margin-right:5px}
+.seg.s0{background:${T.ink};color:${T.card}}
+.seg.s1{background:#b8b5aa;color:#1c1c1a}
+.seg.s2{background:#7d7a70;color:#f0efeb}
+.seg.s3{background:#56534b;color:#e4e2da}
+.seg.rest{background:#332f2a;color:#8f8e88}
+table.mini{width:100%;border-collapse:collapse;margin-top:12px;font-size:10.5px}
+table.mini th{text-align:left;font-size:8.5px;font-weight:600;letter-spacing:.08em;
+ color:${T.faint};padding:0 8px 5px 0;border-bottom:1px solid #2b2a26;
+ font-family:Inter,-apple-system,sans-serif}
+table.mini th.num{text-align:right}
+table.mini td{padding:2.5px 8px 2.5px 0;border-bottom:1px solid #2b2a26;color:${T.ink};
+ font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
+table.mini td.num{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
+table.mini td.dim{color:${T.faint}}
+.field{display:flex;flex-direction:column;gap:5px;margin-top:6px}
+.bucket{display:flex;align-items:flex-start;gap:10px}
+.blabel{width:92px;flex:none;font-size:8.5px;font-weight:700;letter-spacing:.04em;
+ color:${T.muted};padding-top:1px;display:flex;justify-content:space-between}
+.blabel .bn{color:${T.ink};font-weight:800}
+svg.dots{flex:1;min-width:0;height:auto;max-width:100%}
+svg.dots .dot{fill:${T.ink};opacity:.82}
+svg .conc{fill:${T.ink};opacity:.8}
+.entry.summary .ewhere{font-weight:800}
+.entry.summary{border-bottom:1px solid #dcd9cf}
+svg.tl .lane{fill:#e4e2da}
+svg.tl .grid{stroke:#dbd8ce;stroke-width:1}
+svg.tl .bound{stroke:#c0bcb0;stroke-width:1;stroke-dasharray:2 2}
+svg.tl a{cursor:pointer}
+svg.tl a:hover .op{fill:#8a6a2f}
+svg.tl .tick{font-size:6.5px;font-weight:600;fill:#9c998f;letter-spacing:.04em;
+ font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
+svg.tl .lname{font-size:6.5px;font-weight:700;fill:${T.muted};letter-spacing:.06em;
+ font-family:Inter,-apple-system,sans-serif}
+svg.tl .op.real{fill:#1c1c1a}
+svg.tl .op.mark{fill:#a8a498}
+svg.tl .op.err{fill:#a33}
+/* The aggregate belongs on one line under the log, not in a half-screen card. */
+.statusbar{display:flex;flex-wrap:wrap;gap:0 18px;padding:9px 0 0;margin-top:8px;
+ border-top:1px solid #dedcd4;font-size:10.5px;color:#6b6a63;
+ font-variant-numeric:tabular-nums}
+.statusbar b{color:${T.paperInk};font-weight:700}
+/* The app shell: vendors and their sessions down the left, one trajectory
+   filling the right. A board you watch while working needs the list and the
+   detail on screen at once, not one scrolled past the other. */
+.app{display:grid;grid-template-columns:236px 1fr;min-height:100vh;gap:0}
+body:has(.app){padding:0}
+.side{border-right:1px solid #dcd9cf;background:#e9e7e0;padding:16px 0 0;
+ display:flex;flex-direction:column;position:sticky;top:0;height:100vh}
+.brand{padding:0 16px 12px;font-size:12.5px;font-weight:800;letter-spacing:-.01em;
+ display:flex;align-items:center;justify-content:space-between}
+.brand .live{font-size:9px;font-weight:600;letter-spacing:.06em;color:#6b6a63;
+ text-transform:uppercase}
+.atabs{display:flex;flex-direction:column;border-top:1px solid #dcd9cf}
+.atab{display:flex;align-items:baseline;gap:7px;padding:8px 16px;border-bottom:1px solid #dcd9cf;
+ border-left:3px solid transparent;font-family:inherit;font-size:11px;font-weight:600;
+ color:#6b6a63;text-decoration:none}
+.atab .vendor{font-weight:800;color:${T.paperInk}}
+.atab .product{font-size:10px;color:#8f8e88;font-weight:500}
+.atab .count{margin-left:auto;font-size:9.5px;color:#8f8e88;font-variant-numeric:tabular-nums}
+.atab.on{background:${T.paper};border-left-color:${T.paperInk}}
+.atab.on .product{color:#6b6a63}
+.entries{flex:1;overflow-y:auto;padding:4px 0}
+.entry{display:flex;flex-direction:column;gap:2px;padding:7px 16px 8px;
+ border-left:3px solid transparent;font-family:inherit;text-decoration:none;border-bottom:none}
+.entry:hover{background:#e3e0d8}
+.entry.on{background:${T.paper};border-left-color:${T.paperInk}}
+.entry .etop{display:flex;gap:8px;align-items:baseline}
+.entry .ewhere{font-size:11.5px;font-weight:700;color:${T.paperInk};
+ white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.entry .ewhen{margin-left:auto;font-size:9.5px;color:#8f8e88;font-variant-numeric:tabular-nums}
+.entry .emeta{font-size:9.5px;color:#8f8e88}
+.side-empty{padding:14px 16px;font-size:10.5px}
+.sidefoot{padding:9px 16px 12px;border-top:1px solid #dcd9cf;font-size:9px;
+ color:#8f8e88;line-height:1.6}
+.main{padding:20px 26px 40px;min-width:0}
+/* lieflat-charts: light cards by default, at most one dark card per screen.
+   Lightness carries importance; there is no colour anywhere. */
+.digest{display:grid;grid-template-columns:1fr 1fr;gap:14px;align-items:start}
+.digest .card{background:#f4f3ee;color:${T.paperInk};border-radius:24px;padding:18px 22px 14px}
+.digest .card h2{font-size:15px;font-weight:700;color:${T.paperInk}}
+.digest .card .sub{font-size:11px;color:#6b6a63;margin-bottom:10px}
+.digest .card .src{color:#9c998f;letter-spacing:.1em;text-transform:uppercase;font-size:8.5px}
+.digest .card.dark{background:${T.card};color:${T.ink}}
+.digest .card.dark h2{color:${T.ink}}
+.digest .card.dark .sub{color:${T.muted}}
+/* The chart classes were written when every card was dark. On paper the ink
+   has to invert, or the marks are white on white. */
+.digest svg{width:auto;height:auto;max-width:100%}
+.digest .card .tick{stroke:${T.paperInk}}
+.digest .card .val{fill:${T.paperInk}}
+.digest .card .lbl{fill:#8f8e88}
+.digest .card .rule{stroke:#dedcd4}
+.digest .card .unit{fill:#9c998f}
+.digest .card .note{fill:#6b6a63}
+.digest .card .fifth{fill:#c6c5bf}
+.digest .card .dot,.digest .card .sq{fill:${T.paperInk}}
+.digest .card.dark .tick{stroke:${T.ink}}
+.digest .card.dark .val{fill:${T.ink}}
+.digest .card.dark .rule{stroke:${T.rule}}
+.digest .card.dark .unit{fill:${T.faint}}
+.digest .card.dark .fifth{fill:${T.faint}}
+.digest .card .fig .n{color:${T.paperInk}}
+.digest .card .fig .k{color:#8f8e88}
+/* the marks */
+.rung{stroke:${T.paperInk};stroke-width:1}
+.grid{stroke:#dedcd4;stroke-width:.8}
+.hair{stroke:#c2bfb4;stroke-width:.7}
+.edge{fill:none;stroke:${T.paperInk};stroke-width:1}
+.jit{fill:${T.paperInk};opacity:.55}
+.diag{stroke:#4a4944;stroke-width:1;stroke-dasharray:2 4}
+.stack{fill:#b3b0a4;opacity:.9}
+.crown{fill:${T.ink}}
+.bignum{font-size:11px;font-weight:800;fill:${T.paperInk};font-family:Inter,-apple-system,sans-serif}
+.dnum{font-size:8.5px;font-weight:700;fill:${T.ink};font-family:Inter,-apple-system,sans-serif}
+.cap{font-size:7.5px;font-weight:700;fill:#8f8e88;letter-spacing:.08em;
+ font-family:Inter,-apple-system,sans-serif}
+.dcap{font-size:6.5px;font-weight:600;fill:#6a6963;letter-spacing:.06em;
+ font-family:Inter,-apple-system,sans-serif}
+.dunit{font-size:7px;font-weight:600;fill:#57574f;letter-spacing:.12em;
+ font-family:Inter,-apple-system,sans-serif}
+.digest .card.wide{grid-column:1/-1}
+.digest table.mini td{border-bottom-color:#e2e0d7;color:${T.paperInk}}
+.digest table.mini th{color:#9c998f;border-bottom-color:#e2e0d7}
+.digest table.mini td.dim{color:#9c998f}
+table.mini td.one{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:0}
+table.mini.fail td{padding-top:3px;padding-bottom:3px}
+.digest .card .src+table.mini{margin-top:4px}
+.digest .card .src{margin-top:14px}
+.digest .card.dark table.mini td{border-bottom-color:#2b2a26;color:${T.ink}}
+.digest .card.dark table.mini th{color:${T.faint};border-bottom-color:#2b2a26}
+.digest .ledger{grid-column:1/-1}
+@media (max-width:1180px){.digest{grid-template-columns:1fr}}
+.waiting{max-width:60ch;padding-top:40px}
+.waiting h1{font-size:20px;font-weight:700;margin:0 0 10px}
+.waiting p{font-size:13px;line-height:1.7;color:#55554f;margin:0 0 10px}
+.waiting .dimp{font-size:11px;color:#8f8e88}
+@media (max-width:820px){.app{grid-template-columns:1fr}.side{position:static;height:auto}}
+.modes{display:flex;gap:14px;margin:2px 0 14px;font-size:10px;letter-spacing:.06em;text-transform:uppercase}
+.modes a{border-bottom:none;font-family:inherit;font-weight:600;color:${T.muted}}
+.modes a.on{color:${T.paperInk};border-bottom:2px solid ${T.paperInk}}
+.board{grid-column:1/-1;padding:0 0 26px}
+.boardhead{display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;
+ padding-bottom:6px;border-bottom:2px solid ${T.paperInk}}
+.boardhead .who{font-size:14px;font-weight:700;letter-spacing:-.01em}
+.boardhead .sid{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px;
+ color:${T.muted}}
+.boardhead .dim{font-size:10.5px;color:#6b6a63;margin-left:auto}
+.dot.paused{background:#a8a498}
+.dot{display:inline-block;width:6px;height:6px;border-radius:50%;background:#3f7d3f;
+ margin-right:7px;vertical-align:middle}
 td.num{font-variant-numeric:tabular-nums;text-align:right;padding-right:14px}
 th.num{text-align:right;padding-right:14px}
 .dim{color:#8f8e88}
@@ -216,18 +674,31 @@ function fig(n: string, k: string): string {
   return `<div class="fig"><div class="n">${esc(n)}</div><div class="k">${esc(k)}</div></div>`
 }
 
-/** The shared document shell. One stylesheet, no script, no remote asset. */
-function page(title: string, body: string): string {
+/**
+ * The shared document shell. One stylesheet, no script, no remote asset.
+ *
+ * A live board has to update itself, and the page carries no script — so the
+ * refresh is a meta directive, which is HTML rather than code and keeps the
+ * "no script" promise intact.
+ */
+function page(
+  title: string, body: string,
+  refreshSeconds?: number, shell = 'wrap',
+): string {
+  // Without script the meta refresh is the only way the board updates, so it
+  // lives in <noscript>; with script the page swaps in place instead.
+  const fallback = refreshSeconds === undefined ? ''
+    : `<noscript><meta http-equiv="refresh" content="${String(refreshSeconds)}"/></noscript>\n`
   return `<!doctype html>
 <html lang="zh-CN">
 <head>
 <meta charset="utf-8"/>
 <meta name="viewport" content="width=device-width,initial-scale=1"/>
-<title>${esc(title)}</title>
+${fallback}<title>${esc(title)}</title>
 <style>${STYLE}</style>
 </head>
-<body>
-<div class="wrap">
+<body${refreshSeconds === undefined ? '' : ` data-refresh="${String(refreshSeconds)}"`}>
+<div class="${shell}">
 ${body}
 </div>
 </body>
@@ -369,9 +840,16 @@ function comparison(sessions: readonly Session[]): string {
  * The index a server hands out: what it all cost, and what there is to open.
  * @param sessions - the sessions that were parsed, newest first.
  * @param scanned - how many transcripts exist on this machine in total.
+ * @param agents - which agents this machine has transcripts from.
+ * @param active - the agent being shown, or `all`.
  * @returns a complete, self-contained HTML document.
  */
-export function renderIndex(sessions: readonly Session[], scanned: number): string {
+export function renderIndex(
+  sessions: readonly Session[],
+  scanned: number,
+  agents: readonly string[] = [],
+  active = 'all',
+): string {
   const totals = summarise(sessions)
   const agentRows = [...byAgent(sessions).entries()]
     .map(([agent, list]) => ({ label: agent.toUpperCase(), value: averageStatic(list).total }))
@@ -405,9 +883,15 @@ ${perAgent}
 ${tools}
 <div class="card wide">
   <h2>会话</h2>
-  <div class="sub">按最后写入时间排序 · 点会话号打开轨迹与逐条账本</div>
+  <div class="sub">按最后写入时间排序 · 点会话号打开轨迹</div>
 </div>
-<div class="ledger">${sessionList(sessions)}</div>`)
+<div class="ledger">
+  ${agents.length < 2 ? '' : `<div class="modes">${
+    ['all', ...agents].map(key => `<a href="?agent=${encodeURIComponent(key)}"${
+      key === active ? ' class="on"' : ''}>${key === 'all' ? '全部' : esc(key)}</a>`).join('')
+  }</div>`}
+  ${sessionList(sessions)}
+</div>`)
 }
 
 /**
@@ -415,7 +899,7 @@ ${tools}
  * @param session - the session to show.
  * @returns a complete, self-contained HTML document.
  */
-export function renderSession(session: Session): string {
+export function renderSession(session: Session, zoom = 'mid', compress = true): string {
   const body = `<div class="lede">
   <div class="meta"><a href="/">← 全部会话</a></div>
   <h1>会话 ${esc(session.id.slice(0, 12))}</h1>
@@ -424,21 +908,24 @@ export function renderSession(session: Session): string {
 ${headlineCard([session], '本次会话')}
 <div class="card wide">
   <h2>轨迹</h2>
-  <div class="sub">一根发丝线是一步 · 圆点大小是这一步的耗时 · 方块是工具调用</div>
-  ${trajectory(session)}
+  <div class="sub">一行一个操作 · 条的长度是它自己花的时间 · 点开任意一行看全文</div>
 </div>
-${session.events === undefined
-  ? '<div class="card wide"><h2>账本</h2><div class="sub">这份记录没有逐条事件——Codex 的事件流还没做适配。</div></div>'
-  : `<div class="ledger">${ledger(session.events, 1000)}</div>`}`
+<div class="ledger">${trajectoryTable(session, 600, true, false, zoom, compress)}</div>`
   return page(`会话 ${session.id.slice(0, 12)} — Agent Ledger`, body)
 }
 
 /**
  * Render the whole ledger: headline figures, per-agent cost, trajectories.
+ *
+ * One file holds every session, so the per-session row cap matters here in a
+ * way it does not on a server: the page has no virtualisation and a reader
+ * has no way to ask for more.
  * @param sessions - everything recorded.
+ * @param cap - most trajectory rows per session.
+ * @param details - whether rows expand to the untruncated original.
  * @returns a complete, self-contained HTML document.
  */
-export function renderDashboard(sessions: readonly Session[]): string {
+export function renderDashboard(sessions: readonly Session[], cap = 200, details = false): string {
   const totals = summarise(sessions)
   const agents = byAgent(sessions)
 
@@ -470,12 +957,10 @@ export function renderDashboard(sessions: readonly Session[]): string {
   const ordered = [...sessions].sort((a, b) => b.startedAt - a.startedAt)
 
   const traces = ordered.map(session => `<div class="card wide">
-  <h2>会话 ${esc(session.id.slice(0, 8))}</h2>
+  <h2>会话 ${esc(session.id.slice(0, 12))}</h2>
   <div class="sub">${sessionSub(session)}</div>
-  ${trajectory(session)}
-  <div class="src">轨迹 · 一根发丝线 = 一步</div>
 </div>
-${session.events === undefined ? '' : `<div class="ledger">${ledger(session.events)}</div>`}`).join('\n')
+<div class="ledger">${trajectoryTable(session, cap, details)}</div>`).join('\n')
 
   return page('Agent Ledger — 你的 agent 到底做了什么', `<div class="lede">
   <h1>你的 agent 到底做了什么</h1>

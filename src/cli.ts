@@ -126,20 +126,27 @@ async function record(port: number): Promise<number> {
 }
 
 /** Render everything recorded. */
-async function report(out: string | undefined, limit: number, hide: boolean): Promise<number> {
-  const found = [...await readAllSessions(limit), ...await loadSessions()]
+async function report(
+  out: string | undefined, limit: number, hide: boolean,
+  agent: string | undefined, rows: number, full: boolean,
+): Promise<number> {
+  const all = [...await readAllSessions(limit), ...await loadSessions()]
+  const found = agent === undefined ? all : all.filter(session => session.agent === agent)
   if (found.length === 0) {
     console.error('agent-ledger: no sessions found.')
-    console.error('  Looked in ~/.claude/projects and ~/.codex/sessions.')
+    console.error(agent === undefined
+      ? '  Looked in ~/.claude/projects and ~/.codex/sessions.'
+      : `  Nothing from "${agent}". Seen: ${[...new Set(all.map(s => s.agent))].join(', ') || 'nothing'}.`)
     return 1
   }
   const sessions = redactAll(found, hide)
-  const html = renderDashboard(sessions)
+  const html = renderDashboard(sessions, rows, full)
   if (out === undefined) { console.log(html); return 0 }
   await writeFile(out, html, 'utf8')
   const totals = summarise(sessions)
   const stat = averageStatic(sessions)
-  console.error(`agent-ledger: ${String(totals.sessions)} session(s), ${String(totals.steps)} steps → ${out}`)
+  const mb = (Buffer.byteLength(html) / 1048576).toFixed(1)
+  console.error(`agent-ledger: ${String(totals.sessions)} session(s), ${String(totals.steps)} steps → ${out} (${mb} MB)`)
   console.error(`  ${stat.total.toLocaleString('en-US')} static tokens per request · ${(totals.cacheHitRate * 100).toFixed(0)}% cache hit`)
   return 0
 }
@@ -178,6 +185,7 @@ export async function main(argv: readonly string[]): Promise<number> {
     case 'record': return await record(Number(flag('--port') ?? 4488))
     case 'report': return await report(
       flag('--out'), Number(flag('--limit') ?? 40), rest.includes('--redact'),
+      flag('--agent'), Number(flag('--rows') ?? 200), rest.includes('--full'),
     )
     case 'sessions': return await list(Number(flag('--limit') ?? 40))
     case undefined: case '-h': case '--help': console.log(USAGE); return 0

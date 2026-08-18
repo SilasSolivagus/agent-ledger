@@ -218,18 +218,45 @@ test('chooseUnit stays round and bounded', () => {
   }
 })
 
+const ONE_SESSION = {
+  id: 'abcdef12', agent: 'claude-code', startedAt: 0,
+  steps: [{
+    index: 0, startedAt: 0, durationMs: 900, ttftMs: 200, model: 'm', wire: 'anthropic-messages',
+    staticTokens: { prompt: 2893, tools: 45678 }, toolCount: 80, historyLength: 2,
+    usage: { input: 1200, output: 88, cacheRead: 9000, cacheWrite: 0 },
+    calls: [{ name: 'Bash', argBytes: 5 }],
+  }],
+  events: [
+    { kind: 'user', at: 1000, turn: 1, text: 'GO', full: 'GO, and here is the long version' },
+    {
+      kind: 'tool', at: 1000, turn: 1, tool: 'Bash', text: 'command: ls',
+      full: '{"command":"ls -la"}', result: 'a b c', resultFull: 'a\nb\nc',
+      durationMs: 250, timing: 'measured',
+    },
+  ],
+}
+
 test('the dashboard is self-contained', () => {
-  const html = renderDashboard([{
-    id: 'abcdef12', agent: 'claude-code', startedAt: 0,
-    steps: [{
-      index: 0, startedAt: 0, durationMs: 900, ttftMs: 200, model: 'm', wire: 'anthropic-messages',
-      staticTokens: { prompt: 2893, tools: 45678 }, toolCount: 80, historyLength: 2,
-      usage: { input: 1200, output: 88, cacheRead: 9000, cacheWrite: 0 },
-      calls: [{ name: 'Bash', argBytes: 5 }],
-    }],
-  }])
+  const html = renderDashboard([ONE_SESSION])
   assert.ok(!/<script/i.test(html), 'no script')
   assert.ok(!/(src|href)\s*=\s*["']https?:/i.test(html), 'no remote assets')
   assert.match(html, /48,571|45,678/)
-  assert.match(html, /ONE HAIRLINE = ONE STEP/)
+  assert.match(html, /250 ms/, 'the log carries each row own time')
+  assert.match(html, /class="op real"/, 'and the overview strip marks the measured ones')
+})
+
+test('the export leaves out the expandable originals unless asked', () => {
+  // They are most of the file: an export of every session runs to megabytes
+  // with them. A server renders one session at a time and can afford them.
+  // Turns are collapsible too, so the check has to name the row-level panel
+  // rather than any <details> at all.
+  const lean = renderDashboard([ONE_SESSION])
+  assert.ok(!/<details>/.test(lean), 'no row expands by default')
+  assert.ok(!/ls -la/.test(lean), 'and the originals really are absent')
+  assert.match(lean, /class="turnmark"/, 'turn boundaries are still marked')
+
+  const full = renderDashboard([ONE_SESSION], 200, true)
+  assert.match(full, /<details><summary class="line">/)
+  assert.match(full, /ls -la/, 'the original command is there when asked for')
+  assert.ok(full.length > lean.length)
 })
