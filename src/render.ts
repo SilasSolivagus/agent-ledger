@@ -10,6 +10,7 @@
 
 import type { LedgerEvent, Session, Timing } from './types.js'
 import { agentLabel, AGENT_VENDOR, type AgentKind } from './types.js'
+import { digest, type Digest, type Ranked } from './digest.js'
 import { summarise, averageStatic, byAgent } from './summary.js'
 import { profiles, type AgentProfile } from './profile.js'
 
@@ -368,6 +369,394 @@ ${timeline(events, px, compress)}
     + `<col style="width:72px"/><col style="width:56px"/></colgroup>`
     + `<tbody>${rows.join('')}</tbody></table>`
     + `<div class="src">${esc(note)}${more}</div>`
+}
+
+/**
+ * The chart family, lifted from the lieflat-charts galleries.
+ *
+ * Every one keeps a countable unit and prints it. The rules that shape them,
+ * from that repo's SKILL.md: light cards by default with at most one dark card
+ * per screen, hairlines at 0.5–0.7px, jittered rung length and opacity from a
+ * deterministic pseudo-random so a reload looks identical, a marker every
+ * fifth unit, and no colour — lightness carries importance.
+ *
+ * @see /Users/silas/项目探索/lieflat-charts/templates
+ */
+
+/** Grey ladder, darkest first. Lightness is the encoding, not hue. */
+const LADDER = ['#1C1C1A', '#6A6963', '#8F8E88', '#B0AFA9', '#C6C5BF'] as const
+
+/**
+ * Shade by rank, not by position.
+ *
+ * The rule is that the most important value is the darkest. Rows arrive in
+ * whatever order their meaning dictates — fresh input before cache read, say —
+ * so handing out the ladder by array index paints a 0.0% row black and a 94%
+ * row nearly white.
+ * @param values - the series, in display order.
+ * @returns one shade per row, assigned by size.
+ */
+function shadesByRank(values: readonly number[]): string[] {
+  const order = values.map((v, i) => ({ v, i })).sort((a, b) => b.v - a.v)
+  const out = values.map(() => LADDER[LADDER.length - 1] as string)
+  order.forEach((entry, rank) => {
+    out[entry.i] = LADDER[Math.min(rank, LADDER.length - 1)] as string
+  })
+  return out
+}
+
+/** L14 Hundred Field — one dot per percentage point, grouped by segment. */
+function hundredField(segments: readonly { label: string; pct: number }[]): string {
+  const W = 1000, COLS = 25, R = 3.6, SX = 38, SY = 16
+  const shades = shadesByRank(segments.map(s2 => s2.pct))
+  const parts: string[] = []
+  let index = 0
+  segments.forEach((seg, si) => {
+    const n = Math.max(0, Math.round(seg.pct))
+    const shade = shades[si] ?? '#1C1C1A'
+    for (let k = 0; k < n && index < 100; k += 1, index += 1) {
+      const cx = 26 + (index % COLS) * SX
+      const cy = 24 + Math.floor(index / COLS) * SY
+      parts.push(`<circle cx="${cx.toFixed(1)}" cy="${cy.toFixed(1)}" r="${R}" fill="${shade}"`
+        + ` class="pop" style="animation-delay:${(index * 0.011).toFixed(3)}s"`
+        + ` opacity="${(0.72 + jitter(index + 1, si + 3) * 0.28).toFixed(2)}"/>`)
+    }
+  })
+  // Two legend columns: four labels on one line ran off the edge.
+  const legend = segments.map((seg, si) => {
+    const shade = shades[si] ?? '#1C1C1A'
+    const col = si % 2, row = Math.floor(si / 2)
+    return `<g transform="translate(${26 + col * 480} ${104 + row * 16})">`
+      + `<circle cx="0" cy="-3" r="3.1" fill="${shade}"/>`
+      + `<text x="9" y="0" class="cap">${esc(seg.label)} · ${seg.pct.toFixed(1)}%</text></g>`
+  }).join('')
+  const H = 108 + Math.ceil(segments.length / 2) * 16 + 16
+  parts.push(`<text x="26" y="${H - 5}" class="unit">一个点 = 一个百分点 · 共 100 点 · 越黑占比越大</text>`)
+  return `<svg viewBox="0 0 ${W} ${H}" width="${W}" height="${H}" role="img">${parts.join('')}${legend}</svg>`
+}
+
+/** F4 Tick Donut — a ring of ticks, one tick per percentage point. */
+function tickDonut(segments: readonly { label: string; pct: number }[]): string {
+  const W = 560, cx = W / 2, cy = 116, R0 = 62
+  const pol = (r: number, deg: number): [number, number] => {
+    const a = (deg * Math.PI) / 180
+    return [cx + r * Math.cos(a), cy + r * Math.sin(a)]
+  }
+  const shades = shadesByRank(segments.map(s2 => s2.pct))
+  const parts: string[] = []
+  let idx = 0
+  segments.forEach((seg, si) => {
+    const shade = shades[si] ?? '#1C1C1A'
+    const n = Math.max(1, Math.round(seg.pct))
+    for (let k = 0; k < n && idx < 100; k += 1, idx += 1) {
+      const a = idx * 3.6 - 90
+      const len = 10 + jitter(idx + 1, si + 2) * 6
+      const [x1, y1] = pol(R0, a)
+      const [x2, y2] = pol(R0 + len, a)
+      parts.push(`<line x1="${x1.toFixed(1)}" y1="${y1.toFixed(1)}" x2="${x2.toFixed(1)}"`
+        + ` y2="${y2.toFixed(1)}" stroke="${shade}" stroke-width="1" class="fade"`
+        + ` style="animation-delay:${(idx * 0.012).toFixed(3)}s"/>`)
+      if (idx % 10 === 0) {
+        const [dx, dy] = pol(R0 - 5, a)
+        parts.push(`<circle cx="${dx.toFixed(1)}" cy="${dy.toFixed(1)}" r="0.8" class="fifth"/>`)
+      }
+    }
+  })
+  const legend = segments.map((seg, si) => {
+    const shade = shades[si] ?? '#1C1C1A'
+    return `<g transform="translate(28 ${216 + si * 19})"><rect x="0" y="-6" width="9" height="9" fill="${shade}"/>`
+      + `<text x="15" y="2" class="cap">${esc(seg.label.toUpperCase())} · ${seg.pct.toFixed(1)}%</text></g>`
+  }).join('')
+  parts.push(`<text x="${cx}" y="${cy + 3}" class="bignum" text-anchor="middle">100</text>`)
+  parts.push(`<text x="${cx}" y="${cy + 15}" class="unit" text-anchor="middle">TICKS</text>`)
+  const H = 228 + segments.length * 19
+  parts.push(`<text x="28" y="204" class="unit">一格 = 一个百分点 · 每十格内圈一个点</text>`)
+  return `<svg viewBox="0 0 ${W} ${H}" width="${W}" height="${H}" role="img">${parts.join('')}${legend}</svg>`
+}
+
+/** F3 Hairline Area — one hairline per sample, standing to its own value. */
+function hairlineArea(points: readonly { at: number; value: number }[], unitNote: string): string {
+  if (points.length < 2) return ''
+  const W = 1160, H = 126, base = H - 26, top = 16
+  const peak = Math.max(...points.map(p => p.value), 1)
+  const t0 = points[0]?.at ?? 0
+  const t1 = points.at(-1)?.at ?? t0 + 1
+  const x = (at: number): number => 26 + ((at - t0) / Math.max(1, t1 - t0)) * (W - 52)
+  const y = (v: number): number => base - (v / peak) * (base - top)
+  const parts: string[] = []
+  for (let n = 1; n <= peak; n += 1) {
+    parts.push(`<line x1="20" y1="${y(n).toFixed(1)}" x2="${W - 20}" y2="${y(n).toFixed(1)}" class="grid"/>`)
+    parts.push(`<text x="14" y="${(y(n) + 2.5).toFixed(1)}" class="cap" text-anchor="end">${n}</text>`)
+  }
+  // The fill is not a block of ink: it is one hairline per sample standing up
+  // to its own reading, so the area is made of the samples it claims to sum.
+  const STEP = Math.max(1.6, (W - 52) / 260)
+  let prev = points[0]
+  for (const point of points.slice(1)) {
+    if (prev === undefined) break
+    for (let px = x(prev.at); px < x(point.at); px += STEP) {
+      parts.push(`<line x1="${px.toFixed(1)}" y1="${base}" x2="${px.toFixed(1)}"`
+        + ` y2="${y(prev.value).toFixed(1)}" class="hair"/>`)
+    }
+    prev = point
+  }
+  const path = points.map((p, i) => `${i === 0 ? 'M' : 'L'}${x(p.at).toFixed(1)} ${y(p.value).toFixed(1)}`).join('')
+  parts.push(`<path d="${path}" class="edge draw" pathLength="1"`
+    + ` style="--len:1;stroke-dasharray:1"/>`)
+  parts.push(`<line x1="20" y1="${base}" x2="${W - 20}" y2="${base}" class="grid"/>`)
+  parts.push(`<text x="26" y="${H - 5}" class="unit">${esc(unitNote)}</text>`)
+  return `<svg viewBox="0 0 ${W} ${H}" width="${W}" height="${H}" role="img">${parts.join('')}</svg>`
+}
+
+/** G15 Jitter Strip — every record as one dot, scattered inside its band. */
+function jitterStrip(
+  groups: readonly { label: string; values: readonly number[] }[],
+  unitNote: string,
+): string {
+  const W = 1160, ROW = 44, PAD = 96
+  const all = groups.flatMap(g => g.values)
+  if (all.length === 0) return ''
+  const peak = Math.max(...all, 1)
+  const x = (v: number): number => PAD + (Math.sqrt(v / peak)) * (W - PAD - 40)
+  const parts: string[] = []
+  groups.forEach((group, i) => {
+    const cy = 26 + i * ROW
+    parts.push(`<line x1="${PAD}" y1="${cy}" x2="${W - 40}" y2="${cy}" class="grid"/>`)
+    parts.push(`<text x="${PAD - 10}" y="${cy + 3}" class="cap" text-anchor="end">${esc(group.label.toUpperCase())}</text>`)
+    parts.push(`<text x="${W - 34}" y="${cy + 3}" class="cap">${group.values.length}</text>`)
+    group.values.forEach((value, k) => {
+      const off = (jitter(k + 1, i + 5) - 0.5) * 22
+      parts.push(`<circle cx="${x(value).toFixed(1)}" cy="${(cy + off).toFixed(1)}" r="1.7"`
+        + ` class="jit pop" style="animation-delay:${(i * 0.08 + Math.min(k, 120) * 0.009).toFixed(3)}s"/>`)
+    })
+  })
+  const H = 26 + groups.length * ROW + 22
+  parts.push(`<text x="${PAD}" y="${H - 5}" class="unit">${esc(unitNote)}</text>`)
+  return `<svg viewBox="0 0 ${W} ${H}" width="${W}" height="${H}" role="img">${parts.join('')}</svg>`
+}
+
+/** `5.4 小时` / `19 分钟` / `2,010 ms`, whichever reads. */
+function span(value: number): string {
+  if (value >= 3600_000) return `${(value / 3600_000).toFixed(1)} 小时`
+  if (value >= 60_000) return `${(value / 60_000).toFixed(1)} 分钟`
+  return ms(value)
+}
+
+/** A ranked breakdown: proportion above, exact figures below. */
+function rankedCard(
+  title: string, sub: string, rows: readonly Ranked[],
+  format: (v: number) => string, unit: string,
+): string {
+  if (rows.length === 0) return ''
+  const byCalls = rows.every(r => r.totalMs === 0)
+  const top = (byCalls ? [...rows].sort((a, b) => b.calls - a.calls) : rows).slice(0, 12)
+  const table = `<table class="mini"><thead><tr><th></th><th class="num">调用</th>`
+    + `<th class="num">合计</th><th class="num">中位</th></tr></thead>`
+    + `<tbody>${top.map(r => `<tr><td>${esc(r.name)}</td>`
+      + `<td class="num">${r.calls.toLocaleString('en-US')}</td>`
+      + `<td class="num">${byCalls ? '' : esc(unit === '' ? span(r.totalMs) : format(r.totalMs))}</td>`
+      + `<td class="num dim">${r.medianMs > 0 ? ms(r.medianMs) : ''}</td></tr>`).join('')}</tbody></table>`
+  return `<div class="card">
+  <h2>${esc(title)}</h2>
+  <div class="sub">${esc(sub)}</div>
+  ${tickChart(top.map(r => ({
+    label: r.name.toUpperCase(), value: byCalls ? r.calls : r.totalMs,
+  })), unit, format, 520)}
+  ${table}
+</div>`
+}
+
+/**
+ * Every measured call as one countable mark, bucketed by duration.
+ *
+ * One dot is one call and the bucket edges are printed, so the shape can be
+ * verified by counting. Buckets step by roughly powers of ten because the
+ * durations do.
+ */
+function durationField(d: Digest): string {
+  if (d.durations.length === 0) return ''
+  const edges = [0, 10, 50, 200, 1000, 5000, 30_000, 120_000, Infinity]
+  const names = ['< 10 ms', '10–50 ms', '50–200 ms', '0.2–1 s', '1–5 s', '5–30 s', '30 s–2 min', '> 2 min']
+  const buckets = names.map(() => 0)
+  for (const value of d.durations) {
+    const seat = edges.findIndex((edge, i) => value >= edge && value < (edges[i + 1] ?? Infinity))
+    if (seat >= 0) buckets[seat] = (buckets[seat] ?? 0) + 1
+  }
+  // A bucket that nothing fell into still belongs on the axis: an absent row
+  // reads as a missing bucket rather than as an empty one.
+  const rows = names.map((name, i) => ({ label: name, value: buckets[i] ?? 0 }))
+  return `<div class="card wide">
+  <h2>调用耗时分布</h2>
+  <div class="sub">${d.durations.length.toLocaleString('en-US')} 次实测调用 · 每个点是一次调用</div>
+  ${jitterStrip(
+    d.tools.slice(0, 6).map(t => ({ label: t.name, values: t.durations })),
+    '横轴按平方根压缩，长尾不吞掉短调用 · 一个点 = 一次调用 · 右端数字为该工具调用次数')}
+  <div class="src">仅含配对到返回值的调用；推算时长不计入</div>
+</div>`
+}
+
+/** Sessions running at the same time, stepping as the count changed. */
+function concurrencyCard(d: Digest): string {
+  if (d.concurrency.length < 2) return ''
+  const peak = Math.max(...d.concurrency.map(c => c.live), 1)
+  const t0 = d.concurrency[0]?.at ?? 0
+  const t1 = d.concurrency.at(-1)?.at ?? t0 + 1
+  const W = 900, H = 74, X0 = 26
+  const x = (at: number): number => X0 + ((at - t0) / Math.max(1, t1 - t0)) * (W - X0 - 10)
+  const y = (n: number): number => H - 14 - (n / peak) * (H - 26)
+  const parts: string[] = []
+  for (let n = 1; n <= peak; n += 1) {
+    parts.push(`<line x1="${X0}" y1="${y(n)}" x2="${W - 10}" y2="${y(n)}" class="rule"/>`)
+    parts.push(`<text x="${X0 - 5}" y="${y(n) + 2.5}" class="lbl" text-anchor="end">${n}</text>`)
+  }
+  let prev = d.concurrency[0]
+  for (const point of d.concurrency.slice(1)) {
+    if (prev === undefined) break
+    parts.push(`<rect x="${x(prev.at).toFixed(1)}" y="${y(prev.live).toFixed(1)}"`
+      + ` width="${Math.max(x(point.at) - x(prev.at), 0.8).toFixed(1)}"`
+      + ` height="${(H - 14 - y(prev.live)).toFixed(1)}" class="conc"/>`)
+    prev = point
+  }
+  parts.push(`<text x="${X0}" y="${H - 3}" class="unit">${clock(t0)}</text>`)
+  parts.push(`<text x="${W - 10}" y="${H - 3}" class="unit" text-anchor="end">${clock(t1)}</text>`)
+  return `<div class="card wide">
+  <h2>会话并发</h2>
+  <div class="sub">峰值 ${peak} 个 · ${d.concurrency.length} 次变化</div>
+  ${hairlineArea(d.concurrency.map(c => ({ at: c.at, value: c.live })),
+    '一根发丝 = 一个采样时刻 · 纵轴一格 = 1 个会话')}
+  <div class="src">并发是工具占用时间高于墙钟时间的原因</div>
+</div>`
+}
+
+/** Token accounting for the window. */
+function tokenCard(d: Digest): string {
+  const rows = [
+    { label: '新鲜输入', value: d.input },
+    { label: '缓存读', value: d.cacheRead },
+    { label: '缓存写', value: d.cacheWrite },
+    { label: '输出', value: d.output },
+  ].filter(r => r.value > 0)
+  if (rows.length === 0) return ''
+  const n = (v: number): string => v.toLocaleString('en-US')
+  const sum = rows.reduce((t, r) => t + r.value, 0)
+  return `<div class="card wide">
+  <h2>token 消耗</h2>
+  <div class="sub">共 ${n(sum)} token 经手 · 缓存命中 ${(d.cacheHitRate * 100).toFixed(0)}%</div>
+  ${hundredField(rows.map(r => ({ label: `${r.label} ${n(r.value)}`, pct: (r.value / sum) * 100 })))}
+  <table class="mini"><tbody>${rows.map(r => `<tr><td>${esc(r.label)}</td>`
+    + `<td class="num">${n(r.value)}</td>`
+    + `<td class="num dim">${((r.value / sum) * 100).toFixed(1)}%</td></tr>`).join('')}</tbody></table>
+  <div class="src">输入口径已统一为仅含新鲜输入，缓存读单列 —— OpenAI 将缓存计入 input，Anthropic 计在其外</div>
+</div>`
+}
+
+/** Calls that reported failure, most recent first. */
+function failureCard(d: Digest): string {
+  if (d.failures.length === 0) {
+    return `<div class="card wide"><h2>调用失败</h2>
+  <div class="sub">窗口内无失败记录</div></div>`
+  }
+  return `<div class="card wide">
+  <h2>调用失败</h2>
+  <div class="sub">共 ${d.errors} 条 · 列出最近 ${d.failures.length} 条</div>
+  <table class="mini fail"><colgroup><col style="width:74px"/><col style="width:110px"/><col/></colgroup>
+  <tbody>${d.failures.map(f => `<tr>`
+    + `<td class="num dim">${esc(clock(f.at))}</td>`
+    + `<td>${esc(f.tool)}</td>`
+    + `<td class="one">${esc(f.text)}<span class="arrow"> → </span>`
+    + `<span class="ret">${esc(f.result)}</span></td></tr>`).join('')}</tbody></table>`
+}
+
+/**
+ * The summary a vendor tab opens onto.
+ * @param d - that vendor's live sessions, added up.
+ * @returns the panels, in reading order.
+ */
+export function renderDigest(d: Digest): string {
+  const n = (v: number): string => v.toLocaleString('en-US')
+  // A source can record what happened without recording when or how much.
+  // Cursor stamps no record and reports no usage, so every timing and token
+  // figure below would be a zero standing in for "not recorded" — which is a
+  // different claim, and the one a reader would take away.
+  const timed = d.durations.length > 0 || d.spanMs > 0
+  const metered = d.input + d.output + d.cacheRead + d.cacheWrite > 0
+  const missing = [
+    timed ? '' : '耗时：这个来源不给记录打时间戳，无法测量，也无法从相邻记录推算',
+    metered ? '' : 'token：这个来源不报告用量，输入、输出与缓存都无从得知',
+  ].filter(v => v !== '')
+  const gap = missing.length === 0 ? '' : `<div class="card wide">
+  <h2>这个来源没有的东西</h2>
+  <div class="sub">下面几项在别的 agent 看板上有，在这里没有 —— 不是零，是这个来源不记录</div>
+  <table class="mini"><tbody>${missing.map(line => {
+    const [what, why] = line.split('：')
+    return `<tr><td>${esc(what ?? '')}</td><td class="dim">${esc(why ?? '')}</td></tr>`
+  }).join('')}</tbody></table>
+</div>`
+  // The headline row is the house's own figure card, and the summary lost it
+  // when it was first built: eight numbers a reader wants before any chart.
+  const headline = `<div class="card wide">
+  <h2>本窗口</h2>
+  <div class="sub">${d.sessions} 个会话 · 工具时间按区间并集计算，各会话直接相加为 ${span(d.toolOccupancyMs)}</div>
+  <div class="figs">
+    ${fig(span(d.spanMs), '窗口时长')}
+    ${fig(`${((d.toolMs / Math.max(1, d.spanMs)) * 100).toFixed(1)}%`, '其中工具执行')}
+    ${fig(span(d.toolMs), '工具执行时长')}
+    ${fig(n(d.turns), '轮次')}
+    ${fig(n(d.steps), '步数')}
+    ${fig(n(d.calls), '工具调用')}
+    ${fig(n(d.output), '输出 token')}
+    ${fig(`${(d.cacheHitRate * 100).toFixed(0)}%`, '缓存命中')}
+    ${fig(n(d.errors), '调用失败')}
+  </div>
+</div>`
+  return `${headline}
+${gap}
+${timed ? durationField(d) : ''}
+${timed ? rankedCard('工具耗时', '按总耗时排序，非按调用次数', d.tools, ms, '') : rankedCard(
+    '工具调用', '按调用次数排序 —— 这个来源不记时间，无法按耗时排', d.tools,
+    v => v.toLocaleString('en-US'), '次')}
+${metered ? tokenCard(d) : ''}
+${(() => {
+    const sum = d.models.reduce((t, m) => t + m.totalMs, 0)
+    if (sum === 0 && d.skills.length === 0 && d.subagents.length === 0) return ''
+    // The ring earns its space only when there is a composition to see. Two
+    // values are a sentence, not a chart.
+    const ring = d.models.length >= 3
+      ? tickDonut(d.models.slice(0, 5).map(m => ({ label: m.name, pct: (m.totalMs / sum) * 100 })))
+      : ''
+    /**
+     * One attributed breakdown.
+     *
+     * Each section is a share of its own attributed set, never of the page
+     * total. A subagent's output is a subset of the model output above it, so
+     * dividing by the model total made the only subagent read 100.0% — which
+     * says "everything came from a subagent" when it means "every record that
+     * carries an attribution carries this one". The header names the
+     * denominator so the figure cannot be read as the wrong share.
+     */
+    const part = (title: string, rows: readonly Ranked[], denom: string): string => {
+      if (rows.length === 0) return ''
+      const total = rows.reduce((t, r) => t + r.totalMs, 0)
+      return `<div class="src">${esc(title)}</div><table class="mini">`
+        + `<thead><tr><th></th><th class="num">记录</th><th class="num">输出 token</th>`
+        + `<th class="num">${esc(denom)}</th></tr></thead><tbody>${rows.slice(0, 8).map(r => `<tr>`
+          + `<td>${esc(r.name)}</td><td class="num">${n(r.calls)}</td>`
+          + `<td class="num">${n(r.totalMs)}</td>`
+          + `<td class="num dim">${total === 0 ? '' : `${((r.totalMs / total) * 100).toFixed(1)}%`}</td>`
+          + `</tr>`).join('')}</tbody></table>`
+    }
+    return `<div class="card wide">
+  <h2>产出归因</h2>
+  <div class="sub">这些输出 token 是谁产生的 · 按输出量排序</div>
+  ${ring}
+  ${part('模型', d.models, '占全部输出')}
+  ${part('SKILL · 仅统计带归属的记录', d.skills, '占已标注 SKILL 的输出')}
+  ${part('子代理 · 仅统计带归属的记录', d.subagents, '占已标注子代理的输出')}
+  ${d.hasAttribution ? '' : `<div class="src">${esc(agentLabel(d.agent))} 的会话记录不含 skill / 子代理归属字段，此项无数据 —— 非零值，是该字段不存在</div>`}
+</div>`
+  })()}
+${concurrencyCard(d)}
+${failureCard(d)}`
 }
 
 const STYLE = `*{box-sizing:border-box}
