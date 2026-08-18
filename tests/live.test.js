@@ -195,7 +195,8 @@ test('turn boundaries are marked without costing a header', async () => {
     await writeFile(join(claude, 'session-two.jsonl'),
       claudeTurn('FIRST-TURN', 3) + claudeTurn('SECOND-TURN', 5), 'utf8')
     const body = await get('/?agent=claude-code&s=session-two')
-    const marks = [...body.matchAll(/class="turnmark"><td><\/td><td colspan="4">第 (\d+) 轮/g)]
+    // Six columns now that money has one, so the marker spans five.
+    const marks = [...body.matchAll(/class="turnmark"><td><\/td><td colspan="5">第 (\d+) 轮/g)]
     assert.deepEqual(marks.map(m => m[1]), ['1', '2'], 'one thin line per turn')
     // Every record is one row; a turn does not cost a card or a heading.
     assert.match(body, /<table class="log">/)

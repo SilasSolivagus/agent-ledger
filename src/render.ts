@@ -14,7 +14,8 @@ import { digest, type Digest, type Ranked } from './digest.js'
 import type { WorkbuddyDetail } from './workbuddy.js'
 import { summarise, averageStatic, byAgent } from './summary.js'
 import { profiles, type AgentProfile } from './profile.js'
-import { T, esc, jitter, ms, span } from './html.js'
+import { T, esc, jitter, ms, money, moneyAll, span } from './html.js'
+import { costOf, priceNote, spendOf, PRICED_AT } from './price.js'
 import { hairlineArea, hundredField, jitterStrip, tickDonut } from './charts.js'
 
 
@@ -274,6 +275,19 @@ function timeline(events: readonly LedgerEvent[], px: number, compress: boolean)
     + ` class="tl${fit ? ' fit' : ''}" role="img">${parts.join('')}</svg></div>`
 }
 
+/**
+ * The money cell for one record.
+ *
+ * Empty when the record was not a request at all — your own messages and tool
+ * calls buy nothing. A dash when it was a request whose model has no price:
+ * that record did cost something, and printing a zero would say it did not.
+ */
+function cell2(event: LedgerEvent): string {
+  if (event.usage === undefined) return ''
+  const cost = costOf(event.usage, event.model, event.at)
+  return cost === undefined ? '<span class="dim">—</span>' : money(cost)
+}
+
 export function trajectoryTable(
   session: Session,
   cap = 600,
@@ -300,7 +314,7 @@ export function trajectoryTable(
     const mark: string[] = []
     if (event.turn !== turn) {
       turn = event.turn
-      mark.push(`<tr class="turnmark"><td></td><td colspan="4">第 ${turn} 轮</td></tr>`)
+      mark.push(`<tr class="turnmark"><td></td><td colspan="5">第 ${turn} 轮</td></tr>`)
     }
     // Call and result share one line, the way a log does. Two wrapping columns
     // turn one record into four lines of screen and put a quarter as much of
@@ -322,6 +336,9 @@ export function trajectoryTable(
       + `<td class="say">${body}</td>`
       + `<td class="num t-${event.timing ?? 'none'}">${ms(event.durationMs)}</td>`
       + `<td class="num tok">${event.usage === undefined ? '' : event.usage.output.toLocaleString('en-US')}</td>`
+      // A record that carried tokens but no usable model name gets a dash,
+      // never a zero: it cost something, and what it cost is not knowable.
+      + `<td class="num cost">${cell2(event)}</td>`
       + `</tr>`)
     return mark
   })
@@ -352,7 +369,7 @@ export function trajectoryTable(
   <span class="zooms">${idle}${scale}</span></div>
 ${timeline(events, px, compress)}
 <table class="log"><colgroup><col style="width:38px"/><col style="width:64px"/><col/>`
-    + `<col style="width:72px"/><col style="width:56px"/></colgroup>`
+    + `<col style="width:72px"/><col style="width:56px"/><col style="width:66px"/></colgroup>`
     + `<tbody>${rows.join('')}</tbody></table>`
     + `<div class="src">${esc(note)}${more}</div>`
 }
@@ -436,6 +453,7 @@ function boardHeading(session: Session): string {
 function statusBar(session: Session): string {
   const t = summarise([session])
   const events = session.events ?? []
+  const spend = spendOf(events)
   const measured = events.filter(e => e.timing === 'measured')
   const toolMs = measured.reduce((sum, e) => sum + (e.durationMs ?? 0), 0)
   const turns = Math.max(0, ...events.map(e => e.turn), 0)
@@ -445,6 +463,9 @@ function statusBar(session: Session): string {
   <span>工具实测 <b>${ms(toolMs)}</b>（${measured.length} 条）</span>
   <span>缓存命中 <b>${cache}</b></span>
   <span>输入 <b>${t.input.toLocaleString('en-US')}</b> · 输出 <b>${t.output.toLocaleString('en-US')}</b> token</span>
+  <span>${spend.priced === 0
+    ? '花费 <b>—</b>（这个来源不报告用量）'
+    : `花费 <b>${moneyAll(spend.totals)}</b>${spend.unpriced === 0 ? '' : ` · ${String(spend.unpriced)} 条无价`}`}</span>
 </div>`
 }
 
@@ -677,6 +698,33 @@ function failureCard(d: Digest): string {
  * @param d - that vendor's live sessions, added up.
  * @returns the panels, in reading order.
  */
+/**
+ * What the window cost, with the size of what it could not cost beside it.
+ *
+ * Absent entirely when nothing here reports tokens — Cursor and WorkBuddy
+ * never do — because an empty card claims a measurement was taken and came
+ * back zero. The "什么没有" card already names that gap in the source's own
+ * words, and one honest statement beats two.
+ */
+function spendCard(d: Digest): string {
+  const { spend } = d
+  if (spend.priced === 0 && spend.unpriced === 0) return ''
+  const rows = spend.unpricedModels.map(name =>
+    `<tr><td>${esc(name)}</td><td class="dim">${esc(priceNote(name) ?? '')}</td></tr>`).join('')
+  return `<div class="card">
+  <h2>花费</h2>
+  <div class="sub">按每条请求的四档 token 与该型号单价相乘 —— 新鲜输入、输出、缓存读、缓存写</div>
+  <div class="figs">
+    ${spend.priced === 0 ? fig('—', '已计价') : fig(moneyAll(spend.totals), '已计价')}
+    ${fig(String(spend.priced), '计价记录')}
+    ${fig(String(spend.unpriced), '无价记录')}
+  </div>
+  ${rows === '' ? '' : `<div class="src">这些记录烧了 token，但价钱算不出来 —— 不是零</div>
+  <table class="mini"><tbody>${rows}</tbody></table>`}
+  <div class="src">基础档价格，未区分长上下文档与 flex / priority 档 · 价目表取自 ${PRICED_AT}，由 \`npm run prices:check\` 比对上游</div>
+</div>`
+}
+
 export function renderDigest(d: Digest): string {
   const n = (v: number): string => v.toLocaleString('en-US')
   // A source can record what happened without recording when or how much.
@@ -760,6 +808,7 @@ ${(() => {
   ${d.hasAttribution ? '' : `<div class="src">${esc(agentLabel(d.agent))} 的会话记录不含 skill / 子代理归属字段，此项无数据 —— 非零值，是该字段不存在</div>`}
 </div>`
   })()}
+${spendCard(d)}
 ${concurrencyCard(d)}
 ${failureCard(d)}`
 }
@@ -888,6 +937,8 @@ table.log td.say{overflow:hidden}
 table.log .line{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 table.log td.num{text-align:right;font-variant-numeric:tabular-nums;font-size:10.5px;padding-top:1px}
 table.log td.tok{color:#8f8e88}
+table.log td.cost{color:#57574f;font-variant-numeric:tabular-nums}
+table.log td.cost .dim{color:#b0afa9}
 table.log tr.turnmark td{padding:9px 0 3px;font-family:Inter,-apple-system,sans-serif;
  font-size:9px;font-weight:700;letter-spacing:.12em;color:${T.paperInk};
  border-bottom:1px solid #d6d3c8}
@@ -1175,6 +1226,13 @@ function sessionSub(session: Session): string {
 function headlineCard(sessions: readonly Session[], scope: string): string {
   const totals = summarise(sessions)
   const stat = averageStatic(sessions)
+  const spend = spendOf(sessions.flatMap(one => one.events ?? []))
+  // Named separately from the figure because the two say different things:
+  // the figure is what the priced records cost, and this is how much of the
+  // work that figure leaves out.
+  const hole = spend.unpriced === 0 ? ''
+    : ` · ${String(spend.unpriced)} 条无价（${spend.unpricedModels
+      .map(name => `${priceNote(name) ?? '无价'}：${name}`).join(' · ')}）`
   return `<div class="card wide">
   <h2>总账</h2>
   <div class="sub">${esc(scope)}</div>
@@ -1194,11 +1252,14 @@ function headlineCard(sessions: readonly Session[], scope: string): string {
     ${fig(totals.output.toLocaleString('en-US'), '输出 token')}
     ${fig(String(totals.steps), '步数')}
     ${fig(String(totals.toolCalls), '工具调用')}
+    ${spend.priced === 0 ? fig('—', '花费') : fig(moneyAll(spend.totals), '花费')}
   </div>
   <div class="src">RECORDED LOCALLY · NOTHING UPLOADED${
     stat.measuredSteps === 0
       ? ' · STATIC PAYLOAD NEEDS `agent-ledger record`, WHICH TRANSCRIPTS DO NOT CONTAIN'
       : ` · STATIC PAYLOAD FROM ${stat.measuredSteps} PROXIED STEP(S)`}</div>
+  ${spend.priced === 0 && spend.unpriced === 0 ? '' : `<div class="src">花费按每条请求的四档 token 算 · 计价 ${
+    String(spend.priced)} 条${hole} · 基础档价格，未区分长上下文与优先级档 · 价目取自 ${PRICED_AT}</div>`}
 </div>`
 }
 

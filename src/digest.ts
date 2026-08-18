@@ -19,6 +19,7 @@
  */
 
 import type { LedgerEvent, Session } from './types.js'
+import { spendOf, type Spend } from './price.js'
 
 /** One closed interval on the clock. */
 interface Interval { start: number; end: number }
@@ -86,6 +87,8 @@ export interface Digest {
   concurrency: Concurrency[]
   /** Failed calls, newest first. */
   failures: { at: number; tool: string; text: string; result: string }[]
+  /** What the priced records cost, and how many could not be priced. */
+  spend: Spend
 }
 
 function median(values: readonly number[]): number {
@@ -221,5 +224,9 @@ export function digest(agent: string, sessions: readonly Session[]): Digest {
     durations: measured.map(e => e.durationMs ?? 0),
     concurrency: concurrency(sessions),
     failures,
+    // Costed from the events rather than the steps: a step is one request,
+    // but only the event carries which model served it, and a window can mix
+    // several models inside one agent.
+    spend: spendOf(events),
   }
 }
