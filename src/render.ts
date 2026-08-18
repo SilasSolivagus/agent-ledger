@@ -501,6 +501,31 @@ function sideEntry(session: Session, agent: string, active: boolean, range = 'wa
  * @returns a complete, self-contained HTML document.
  */
 /**
+ * What stretch of time this board is answering for.
+ *
+ * `clock` alone was wrong here, and quietly: it prints a time of day and
+ * nothing else, so 近 7 天 and 近 30 天 both rendered as the same
+ * `自 16:55:25 起` despite starting 23 days apart, and 全部 rendered its
+ * epoch-zero start as `自 08:00:00 起` — 1970 read as this morning. A reader
+ * had no way to tell which window they were looking at from the label meant
+ * to tell them.
+ *
+ * A start inside today needs no date; anything older is useless without one.
+ * @param since - the instant the window opens.
+ * @param range - which window, since `all` has no meaningful start.
+ * @param now - the current instant.
+ */
+function windowNote(since: number, range: string, now = Date.now()): string {
+  if (range === 'all') return '全部记录'
+  const midnight = new Date(now)
+  midnight.setHours(0, 0, 0, 0)
+  if (since >= midnight.getTime()) return `自 ${clock(since)} 起`
+  const d = new Date(since)
+  return `自 ${String(d.getMonth() + 1)} 月 ${String(d.getDate())} 日 ${
+    String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')} 起`
+}
+
+/**
  * The one view the per-vendor board cannot give you.
  *
  * Every other tab answers "what is this agent doing". This one answers "how do
@@ -513,9 +538,10 @@ function sideEntry(session: Session, agent: string, active: boolean, range = 'wa
  * is now a question that can be asked at all.
  * @param sessions - every session in the window, across vendors.
  * @param since - when the window opens.
+ * @param range - which window, for the label that names it.
  * @returns the comparison panels, or an invitation when only one vendor ran.
  */
-function crossVendor(sessions: readonly Session[], since: number): string {
+function crossVendor(sessions: readonly Session[], since: number, range: string): string {
   const kinds = new Set(sessions.map(one => one.agent))
   // Two vendor names is not two comparable things. Every figure in this panel
   // is per step, and a source that records no steps — WorkBuddy keeps only
@@ -553,7 +579,7 @@ function crossVendor(sessions: readonly Session[], since: number): string {
 </div>`
 
   return `<div class="digesthead"><span class="who">跨厂商对比</span>
-  <span class="dim">${[...kinds].map(a => esc(agentLabel(a))).join(' · ')} · 自 ${clock(since)} 起</span></div>
+  <span class="dim">${[...kinds].map(a => esc(agentLabel(a))).join(' · ')} · ${windowNote(since, range)}</span></div>
 <div class="digest">${headlineCard(sessions, `${sessions.length} 个会话 · ${[...kinds].length} 家`)}
 ${comparison(sessions)}
 ${payload}
@@ -663,10 +689,10 @@ export function renderLive(
 
   const noRecords = list.length > 0 && list.every(one => one.steps.length === 0 && (one.events ?? []).length === 0)
   const main = active === 'all' && session === undefined
-    ? crossVendor(everySession, since)
+    ? crossVendor(everySession, since, range)
     : session === undefined && list.length > 0
     ? `<div class="digesthead"><span class="who">${esc(agentLabel(active))}</span>
-  <span class="dim">总览 · ${list.length} 个活跃会话 · 自 ${clock(since)} 起</span></div>
+  <span class="dim">总览 · ${list.length} 个活跃会话 · ${windowNote(since, range)}</span></div>
 <div class="digest">${noRecords
     ? renderSourceBoard(sourceDetails.filter(d => list.some(one => one.id === d.id)))
     : renderDigest(digest(active, list))}</div>`
@@ -682,7 +708,7 @@ ${statusBar(session)}`
   <nav class="atabs">${tabs}</nav>
   ${windows}
   <div class="entries">${entries}</div>
-  <div class="sidefoot">${capped === undefined ? '' : `另有 ${capped.dropped} 个会话没读进来（每来源上限 ${capped.limit}，用 --limit 调）<br/>`}${range === 'all' ? '全部记录' : `自 ${clock(since)} 起`} · ${refreshSeconds === null ? `<b>已暂停</b> · <a href="?agent=${encodeURIComponent(active)}${keepRange}">继续自刷</a>` : `每 ${refreshSeconds} 秒自刷 · <a href="?agent=${encodeURIComponent(active)}${keepRange}&amp;live=off">暂停</a>`} · 只读本地文件</div>
+  <div class="sidefoot">${capped === undefined ? '' : `另有 ${capped.dropped} 个会话没读进来（每来源上限 ${capped.limit}，用 --limit 调）<br/>`}${windowNote(since, range)} · ${refreshSeconds === null ? `<b>已暂停</b> · <a href="?agent=${encodeURIComponent(active)}${keepRange}">继续自刷</a>` : `每 ${refreshSeconds} 秒自刷 · <a href="?agent=${encodeURIComponent(active)}${keepRange}&amp;live=off">暂停</a>`} · 只读本地文件</div>
 </aside>
 <main class="main">${main}</main>`, refreshSeconds ?? undefined, 'app', true)
 }

@@ -255,3 +255,34 @@ test('with no agent installed the sidebar goes quiet too', async () => {
     assert.ok(!/这个 agent/.test(body), 'and no agent for that to name')
   } finally { server.close(); server.closeAllConnections() }
 })
+
+test('each window says which stretch of time it covers, and they differ', async () => {
+  // `clock` prints a time of day and nothing else, so 近 7 天 and 近 30 天 both
+  // read as the same `自 16:55:25 起` despite starting 23 days apart, and 全部
+  // printed its epoch-zero start as `自 08:00:00 起` — 1970 as this morning.
+  const { get, stop } = await board()
+  try {
+    const label = async r => {
+      const body = await get(`/?agent=claude-code${r === '' ? '' : `&range=${r}`}`)
+      return /class="sidefoot">([^<]*)/.exec(body)?.[1] ?? ''
+    }
+    const week = await label('week')
+    const month = await label('month')
+    assert.notEqual(week, month, 'two windows 23 days apart cannot read identically')
+    assert.match(week, /月 \d+ 日/, 'a start outside today is useless without its date')
+    assert.match(month, /月 \d+ 日/)
+    assert.match(await label('all'), /全部记录/, 'and 全部 has no start worth printing')
+    // This fixture's baseline is yesterday, so it earns a date like the rest.
+    assert.match(await label(''), /月 \d+ 日/)
+  } finally { stop() }
+})
+
+test('a window that opened today needs no date, only a clock', async () => {
+  const today = await board({ startedAt: Date.now() })
+  try {
+    const body = await today.get('/?agent=claude-code')
+    const foot = /class="sidefoot">([^<]*)/.exec(body)?.[1] ?? ''
+    assert.match(foot, /自 \d\d:\d\d:\d\d 起/, 'a date would be noise inside today')
+    assert.ok(!/月 \d+ 日/.test(foot))
+  } finally { today.stop() }
+})
