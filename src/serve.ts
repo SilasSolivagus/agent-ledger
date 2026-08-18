@@ -24,7 +24,7 @@ import {
   defaultSources, installedAgents, listTranscripts, parseCursorFile, readTranscript,
   type Sources, type TranscriptFile,
 } from './transcript.js'
-import { renderIndex, renderLive, renderSession, ZOOMS } from './render.js'
+import { renderLive, renderSession, ZOOMS } from './render.js'
 import {
   baselineFrom, boardsOf, movedSince, sinceBaseline, windowFrom, RANGES, type Baseline,
 } from './live.js'
@@ -42,8 +42,6 @@ export interface ServeOptions {
   redact?: boolean
   /** Seconds between the board's own reloads. */
   refreshSeconds?: number
-  /** Show what is already on disk too, instead of only new activity. */
-  history?: boolean
   /**
    * Where to remember the baseline across restarts.
    *
@@ -127,7 +125,10 @@ export function createLedgerServer(options: ServeOptions, now = Date.now()): Ser
       const path = decodeURIComponent(url.split('?')[0] ?? '/')
       // The page carries no script, so its one control — how many pixels a
       // second is worth — travels in the URL.
-      const wanted = decodeURIComponent(/[?&]agent=([^&]+)/.exec(url)?.[1] ?? 'all')
+      // Empty means "not asked", which is different from an explicit `all`:
+      // the bare board must still land on whichever vendor is busy, and the
+      // cross-vendor comparison must be something you chose to open.
+      const wanted = decodeURIComponent(/[?&]agent=([^&]+)/.exec(url)?.[1] ?? '')
       const picked = decodeURIComponent(/[?&]s=([^&]+)/.exec(url)?.[1] ?? '')
       const askedZoom = /[?&]zoom=([a-z]+)/.exec(url)?.[1] ?? ''
       const zoom = askedZoom in ZOOMS ? askedZoom : 'mid'
@@ -148,7 +149,7 @@ export function createLedgerServer(options: ServeOptions, now = Date.now()): Ser
       // milliseconds; it is the reads that are expensive.
       const files = await listTranscripts(Infinity, sources)
 
-      if (path === '/' && options.history !== true) {
+      if (path === '/') {
         const baseline = await ready
         const since = windowFrom(range, baseline, Date.now())
         // The baseline window asks "what moved", which needs the byte sizes.
@@ -204,7 +205,9 @@ export function createLedgerServer(options: ServeOptions, now = Date.now()): Ser
         // idle" is not one — falling back there silently bounced a click on a
         // quiet agent to whichever one happened to be busy.
         const agents = [...boards.keys()]
-        const chosen = watching.includes(wanted) ? wanted
+        // `all` is the cross-vendor tab rather than an agent, so it is allowed
+        // through here even though no source is named that.
+        const chosen = wanted === 'all' || watching.includes(wanted) ? wanted
           : agents[0] ?? watching[0] ?? ''
         res.writeHead(200, HTML).end(renderLive(
           boards, watching, since, chosen,
@@ -212,27 +215,6 @@ export function createLedgerServer(options: ServeOptions, now = Date.now()): Ser
           paused ? null : refreshSeconds, zoom, compress, source, range,
           capped === 0 ? undefined : { dropped: capped, limit: options.limit },
         ))
-        return
-      }
-
-      if (path === '/') {
-        // History mode. The budget is per agent and counts sessions found
-        // rather than files looked at: one shared budget hands the whole page
-        // to whichever agent you used today, and counting files means a run of
-        // opened-then-abandoned windows spends it all on nothing.
-        const present = [...new Set(files.map(file => file.agent))].sort()
-        const agent = present.includes(wanted as TranscriptFile['agent']) ? wanted : 'all'
-        const sessions: Session[] = []
-        const found = new Map<string, number>()
-        for (const file of files) {
-          if (agent !== 'all' && file.agent !== agent) continue
-          if ((found.get(file.agent) ?? 0) >= options.limit) continue
-          const session = await load(file)
-          if (session === undefined) continue
-          found.set(file.agent, (found.get(file.agent) ?? 0) + 1)
-          sessions.push(session)
-        }
-        res.writeHead(200, HTML).end(renderIndex(sessions, files.length, present, agent))
         return
       }
 
@@ -298,9 +280,8 @@ export async function serve(options: ServeOptions, open: boolean): Promise<numbe
 
   console.error(`agent-ledger serving on ${url}`)
   if (options.redact === true) console.error('  redacted — shape only, no commands, paths, or conversation')
-  console.error(options.history === true
-    ? `  browsing history · ${String(options.limit)} most recent sessions per agent`
-    : `  watching for new activity · everything already on disk stays off the board`)
+  console.error('  watching for new activity · everything already on disk stays off the board')
+  console.error(`  widen the window on the board itself · ${String(options.limit)} sessions per agent when you do`)
   console.error('  local only, nothing uploaded · Ctrl-C to stop')
   if (open) openBrowser(url)
 

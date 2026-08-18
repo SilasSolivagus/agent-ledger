@@ -25,15 +25,16 @@ import type { Session, Step } from './types.js'
 export const USAGE = `agent-ledger — see what your coding agent actually did
 
 Usage:
-  agent-ledger serve [--port <n>] [--refresh <s>] [--fresh] [--history]
+  agent-ledger serve [--port <n>] [--refresh <s>] [--fresh] [--limit <n>]
                      [--no-open] [--redact]
-        a board showing what your agents are doing now, one per vendor
+        a board showing what your agents are doing now, one per vendor,
+        plus a 跨厂商 tab that puts two of them on the same scale
         only activity after it starts — whatever is already on disk stays off,
         until you widen the window on the board itself: 今天 / 近 7 天 / 全部
         the starting point survives a restart, so closing this does not throw
         away the afternoon; --fresh starts watching from now instead
         --refresh seconds between the board's own reloads (default 5)
-        --history browse what is already there instead, --limit per agent
+        --limit sessions read per agent once the window is wider than that
         --redact serve the shape only — for a screen share or a demo
 
   agent-ledger report [--out <file>] [--limit <n>] [--agent <kind>]
@@ -190,7 +191,6 @@ export async function main(argv: readonly string[]): Promise<number> {
         limit: Number(flag('--limit') ?? 40),
         redact: rest.includes('--redact'),
         refreshSeconds: Number(flag('--refresh') ?? 5),
-        history: rest.includes('--history'),
         state: defaultStatePath(),
         fresh: rest.includes('--fresh'),
       },

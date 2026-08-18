@@ -48,7 +48,7 @@ async function fixture(said = 'DELETE-THE-DEAD-LOOP') {
   const file = join(root, 'session-abc123.jsonl')
   await writeFile(file, transcript(said), 'utf8')
   const server = createLedgerServer({
-    port: 0, limit: 40, history: true,
+    port: 0, limit: 40,
     roots: { ...noSources(root), claude: root },
   })
   const base = await new Promise(resolve => {
@@ -65,15 +65,13 @@ async function get(base, path) {
   return { status: res.status, body: await res.text() }
 }
 
-test('the index lists every session and links to it', async () => {
+test('the board with the window open lists every session and links to it', async () => {
   const { base, stop } = await fixture()
   try {
-    const { status, body } = await get(base, '/')
+    const { status, body } = await get(base, '/?agent=claude-code&range=all')
     assert.equal(status, 200)
-    assert.match(body, /href="\/s\/session-abc123"/, 'the session must be openable')
+    assert.match(body, /\?agent=claude-code&amp;s=session-abc123/, 'the session must be openable')
     assert.match(body, /proj-alpha/, 'where it ran is part of finding it again')
-    assert.match(body, /本机共 1 个会话记录/)
-    assert.ok(!/<script/i.test(body), 'no script')
     assert.ok(!/(src|href)\s*=\s*["']https?:/i.test(body), 'no remote assets')
   } finally { stop() }
 })
@@ -155,7 +153,7 @@ test('an id from a URL never becomes a path', async () => {
   } finally { stop() }
 })
 
-test('a quiet agent still reaches the index when a busy one floods it', async () => {
+test('a quiet agent keeps its own board when a busy one floods the machine', async () => {
   const claude = await mkdtemp(join(tmpdir(), 'agent-ledger-c-'))
   const codex = await mkdtemp(join(tmpdir(), 'agent-ledger-x-'))
   // One old Codex rollout against three newer Claude sessions, with room for
@@ -170,18 +168,22 @@ test('a quiet agent still reaches the index when a busy one floods it', async ()
     await writeFile(join(claude, `session-${n}.jsonl`), transcript(`CLAUDE-${n}`), 'utf8')
   }
   const server = createLedgerServer({
-    port: 0, limit: 2, history: true, roots: { ...noSources(codex), claude, codex },
+    port: 0, limit: 2, roots: { ...noSources(codex), claude, codex },
   })
   const base = await new Promise(resolve => {
     server.listen(0, '127.0.0.1', () => resolve(`http://127.0.0.1:${server.address().port}`))
   })
   try {
-    const { body } = await get(base, '/')
-    assert.match(body, /href="\/s\/2026-01-01T00-00-00-old"/, 'the quiet agent must survive')
+    // Per-vendor boards are what make this structural rather than a budget
+    // fight: the quiet agent cannot be pushed off, because it has its own page.
+    const quiet = await get(base, '/?agent=codex&range=all')
+    assert.match(quiet.body, /2026-01-01T00-00-00-old/, 'the quiet agent must survive')
+    const busy = await get(base, '/?agent=claude-code&range=all')
     assert.equal(
-      (body.match(/href="\/s\/session-/g) ?? []).length, 2,
+      (busy.body.match(/&amp;s=session-/g) ?? []).length, 2,
       'the busy one is capped at the per-agent limit, not unbounded',
     )
+    assert.match(busy.body, /另有 1 个会话没读进来/, 'and the cap is not silent')
   } finally { server.close(); server.closeAllConnections() }
 })
 
@@ -195,45 +197,7 @@ test('listTranscripts stats without reading, and keeps the newest first', async 
   assert.ok(files.every(f => f.agent === 'claude-code' && f.mtimeMs > 0))
 })
 
-test('the comparison names what it cannot measure, and appears only with two agents', async () => {
-  const { base, stop } = await fixture()
-  try {
-    const alone = await get(base, '/')
-    assert.ok(!/两家各自长什么样/.test(alone.body), 'one agent is not a comparison')
-  } finally { stop() }
-
-  const claude = await mkdtemp(join(tmpdir(), 'agent-ledger-c2-'))
-  const codex = await mkdtemp(join(tmpdir(), 'agent-ledger-x2-'))
-  await writeFile(join(claude, 'session-z.jsonl'), transcript('CLAUDE-Z'), 'utf8')
-  await writeFile(join(codex, 'rollout-2026-01-01T00-00-00-z.jsonl'), [
-    JSON.stringify({ timestamp: '2026-01-01T00:00:00.000Z', type: 'turn_context', payload: { model: 'gpt-5.4' } }),
-    JSON.stringify({ timestamp: '2026-01-01T00:00:01.000Z', type: 'event_msg', payload: { type: 'user_message', message: 'DO-THE-THING' } }),
-    JSON.stringify({ timestamp: '2026-01-01T00:00:02.000Z', type: 'response_item', payload: {
-      type: 'function_call', name: 'exec_command', call_id: 'z1', arguments: JSON.stringify({ cmd: 'ls' }),
-    } }),
-    JSON.stringify({ timestamp: '2026-01-01T00:00:03.000Z', type: 'event_msg', payload: {
-      type: 'token_count',
-      info: { last_token_usage: { input_tokens: 900, output_tokens: 40, cached_input_tokens: 400 } },
-    } }),
-  ].join('\n'), 'utf8')
-  const server = createLedgerServer({
-    port: 0, limit: 5, history: true, roots: { ...noSources(codex), claude, codex },
-  })
-  const base2 = await new Promise(resolve => {
-    server.listen(0, '127.0.0.1', () => resolve(`http://127.0.0.1:${server.address().port}`))
-  })
-  try {
-    const { body } = await get(base2, '/')
-    assert.match(body, /两家各自长什么样/)
-    // The whole point of the card is the disclaimer; a build that renders the
-    // numbers without it would read as a scoreboard, which the data cannot support.
-    assert.match(body, /不是排名/)
-    assert.match(body, /答得好不好/, 'it must say out loud what is unmeasurable')
-    assert.match(body, /只看，别当结论/, 'the task-bound group must be marked as such')
-  } finally { server.close(); server.closeAllConnections() }
-})
-
-test('the index switches between the agents this machine actually has', async () => {
+test('the board switches between the agents this machine actually has', async () => {
   const claude = await mkdtemp(join(tmpdir(), 'agent-ledger-s1-'))
   const codex = await mkdtemp(join(tmpdir(), 'agent-ledger-s2-'))
   await writeFile(join(claude, 'session-only-claude.jsonl'), transcript('CLAUDE-SIDE'), 'utf8')
@@ -244,35 +208,24 @@ test('the index switches between the agents this machine actually has', async ()
     } }),
   ].join('\n'), 'utf8')
   const server = createLedgerServer({
-    port: 0, limit: 40, history: true, roots: { ...noSources(codex), claude, codex },
+    port: 0, limit: 40, roots: { ...noSources(codex), claude, codex },
   })
   const base = await new Promise(resolve => {
     server.listen(0, '127.0.0.1', () => resolve(`http://127.0.0.1:${server.address().port}`))
   })
   try {
-    const both = await get(base, '/')
-    assert.match(both.body, /href="\?agent=claude-code"/, 'a tab per agent present')
-    assert.match(both.body, /href="\?agent=codex"/)
-    assert.match(both.body, /<a href="\?agent=all" class="on">/, 'all is the default')
+    const both = await get(base, '/?range=all')
+    assert.match(both.body, /href="\?agent=claude-code&amp;range=all"/, 'a tab per agent present')
+    assert.match(both.body, /href="\?agent=codex&amp;range=all"/)
 
-    const only = await get(base, '/?agent=codex')
+    const only = await get(base, '/?agent=codex&range=all')
     assert.match(only.body, /only-codex/, 'the chosen agent is listed')
     assert.ok(!/only-claude/.test(only.body), 'and the other one is not')
-    assert.match(only.body, /<a href="\?agent=codex" class="on">/)
 
-    // An agent this machine has no transcripts from is not a page.
-    const bogus = await get(base, '/?agent=gemini')
-    assert.match(bogus.body, /<a href="\?agent=all" class="on">/, 'an unknown agent falls back to all')
-    assert.match(bogus.body, /only-claude/)
+    // An agent this machine has no transcripts from is not a board.
+    const bogus = await get(base, '/?agent=gemini&range=all')
+    assert.ok(!/agent=gemini" class/.test(bogus.body), 'an unknown agent gets no tab of its own')
   } finally { server.close(); server.closeAllConnections() }
-})
-
-test('one agent alone gets no switcher, because there is nothing to switch to', async () => {
-  const { base, stop } = await fixture()
-  try {
-    const { body } = await get(base, '/')
-    assert.ok(!/\?agent=/.test(body))
-  } finally { stop() }
 })
 
 test('the fit scale says out loud that its lengths do not travel', async () => {

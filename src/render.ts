@@ -500,6 +500,68 @@ function sideEntry(session: Session, agent: string, active: boolean, range = 'wa
  * @param refreshSeconds - how often the page reloads itself.
  * @returns a complete, self-contained HTML document.
  */
+/**
+ * The one view the per-vendor board cannot give you.
+ *
+ * Every other tab answers "what is this agent doing". This one answers "how do
+ * these two differ", which needs them side by side and therefore needs a place
+ * that is not any one of them. It used to live behind `serve --history`, which
+ * meant the most distinctive thing this product knows how to say was reachable
+ * only by restarting with a flag nobody would guess at.
+ *
+ * It inherits the window like everything else here, so "今天这两家各自什么样"
+ * is now a question that can be asked at all.
+ * @param sessions - every session in the window, across vendors.
+ * @param since - when the window opens.
+ * @returns the comparison panels, or an invitation when only one vendor ran.
+ */
+function crossVendor(sessions: readonly Session[], since: number): string {
+  const kinds = new Set(sessions.map(one => one.agent))
+  // Two vendor names is not two comparable things. Every figure in this panel
+  // is per step, and a source that records no steps — WorkBuddy keeps only
+  // session-level rows, Cursor reports no usage at all — cannot supply one.
+  // Counting it would put a tab on screen whose contents are then blank.
+  const comparable = profiles(sessions).map(one => one.agent)
+  if (comparable.length < 2) {
+    const mute = [...kinds].filter(one => !comparable.includes(one))
+    return `<div class="waiting">
+  <h1>还没有两家可比</h1>
+  <p>这一栏把两个 agent 放在同一把尺子上量，量的都是「每一步」——一步几个工具、每步多少上下文。
+     ${comparable.length === 0 ? '这个窗口里还没有一家' : `目前只有 ${
+       comparable.map(a => esc(agentLabel(a))).join('、')} 一家`}报告了步。</p>
+  ${mute.length === 0 ? '' : `<p class="dimp">${mute.map(a => esc(agentLabel(a))).join('、')
+    } 在这个窗口里有会话，但不记录步 —— 不是零，是这个来源没有这个字段，所以进不了这张表。</p>`}
+  <p class="dimp">换另一个 agent 干点活，或者把窗口拉宽到「今天」「全部」。</p>
+</div>`
+  }
+  const totals = summarise(sessions)
+  const agentRows = [...byAgent(sessions).entries()]
+    .map(([agent, list]) => ({ label: agent.toUpperCase(), value: averageStatic(list).total }))
+    .filter(r => r.value > 0)
+    .sort((a, b) => b.value - a.value)
+  const toolRows = totals.topTools.slice(0, 12).map(t => ({ label: t.name.toUpperCase(), value: t.calls }))
+
+  const payload = agentRows.length === 0 ? '' : `<div class="card wide">
+  <h2>各 agent 开口前先背了多少</h2>
+  <div class="sub">每次请求的固定负载均值 · 系统提示词 + 工具 schema</div>
+  ${tickChart(agentRows, 'TOKEN')}
+  <div class="src">固定负载 · 实测自真实请求</div>
+</div>`
+  const tools = toolRows.length === 0 ? '' : `<div class="card wide">
+  <h2>哪些工具真的跑了</h2>
+  <div class="sub">这个窗口里的调用次数</div>
+  ${tickChart(toolRows, '次调用')}
+  <div class="src">工具调用 · 取自会话记录</div>
+</div>`
+
+  return `<div class="digesthead"><span class="who">跨厂商对比</span>
+  <span class="dim">${[...kinds].map(a => esc(agentLabel(a))).join(' · ')} · 自 ${clock(since)} 起</span></div>
+<div class="digest">${headlineCard(sessions, `${sessions.length} 个会话 · ${[...kinds].length} 家`)}
+${comparison(sessions)}
+${payload}
+${tools}</div>`
+}
+
 export function renderLive(
   boards: ReadonlyMap<string, Session[]>,
   watching: readonly string[],
@@ -519,7 +581,13 @@ export function renderLive(
   // silently drops you back to "since I started" — which looks like the data
   // vanished rather than like the filter reset.
   const keepRange = range === 'watch' ? '' : `&amp;range=${range}`
-  const list = boards.get(active) ?? []
+  // The comparison needs two vendors to be a comparison at all, so its tab
+  // appears only when two have run. One agent alone gets no switcher, which is
+  // the rule the old index followed for the same reason.
+  const everySession = [...boards.values()].flat().sort((a, b) => b.startedAt - a.startedAt)
+  // The same test the panel itself uses, so a tab never opens onto a blank.
+  const crossable = profiles(everySession).length >= 2
+  const list = active === 'all' ? everySession : boards.get(active) ?? []
   // No session picked means the vendor tab itself, and that is the summary.
   const session = chosen === undefined ? undefined : list.find(one => one.id === chosen)
   const total = [...boards.values()].reduce((t, one) => t + one.length, 0)
@@ -529,12 +597,13 @@ export function renderLive(
   // vanished from the switcher — so there was no way to switch, and no way to
   // tell they were supported. The count column exists for exactly this: an
   // agent with nothing yet reads as a dash, not as absent.
-  const shownTabs = [...new Set([...watching, ...agents])].sort()
+  const vendorTabs = [...new Set([...watching, ...agents])].sort()
+  const shownTabs = crossable ? ['all', ...vendorTabs] : vendorTabs
   const tabs = shownTabs.map(key => {
-    const count = (boards.get(key) ?? []).length
-    return `<a class="atab${key === active ? ' on' : ''}" href="?agent=${encodeURIComponent(key)}${keepRange}">
-    <span class="vendor">${esc(AGENT_VENDOR[key as AgentKind]?.vendor ?? key)}</span>
-    <span class="product">${esc(AGENT_VENDOR[key as AgentKind]?.product ?? '')}</span>
+    const count = key === 'all' ? everySession.length : (boards.get(key) ?? []).length
+    return `<a class="atab${key === active ? ' on' : ''}${key === 'all' ? ' cross' : ''}" href="?agent=${encodeURIComponent(key)}${keepRange}">
+    <span class="vendor">${key === 'all' ? '跨厂商' : esc(AGENT_VENDOR[key as AgentKind]?.vendor ?? key)}</span>
+    <span class="product">${key === 'all' ? '放在一把尺子上' : esc(AGENT_VENDOR[key as AgentKind]?.product ?? '')}</span>
     <span class="count">${count === 0 ? '—' : String(count)}</span></a>`
   }).join('')
 
@@ -551,10 +620,13 @@ export function renderLive(
     <span class="emeta">${list.length} 个会话加起来</span></a>`
     + (list.length === 0
       ? '<div class="empty side-empty">这个 agent 还没有新活动</div>'
-      : list.map(one => sideEntry(one, active, one.id === session?.id, range)).join(''))
+      : list.map(one => sideEntry(one, active === 'all' ? one.agent : active,
+        one.id === session?.id, range)).join(''))
 
   const noRecords = list.length > 0 && list.every(one => one.steps.length === 0 && (one.events ?? []).length === 0)
-  const main = session === undefined && list.length > 0
+  const main = active === 'all' && session === undefined
+    ? crossVendor(everySession, since)
+    : session === undefined && list.length > 0
     ? `<div class="digesthead"><span class="who">${esc(agentLabel(active))}</span>
   <span class="dim">总览 · ${list.length} 个活跃会话 · 自 ${clock(since)} 起</span></div>
 <div class="digest">${noRecords
@@ -1095,6 +1167,7 @@ body:has(.app){padding:0}
 .entry .ewhen{margin-left:auto;font-size:9.5px;color:#8f8e88;font-variant-numeric:tabular-nums}
 .entry .emeta{font-size:9.5px;color:#8f8e88}
 .side-empty{padding:14px 16px;font-size:10.5px}
+.atab.cross .vendor{letter-spacing:.06em}
 .ranges{display:flex;gap:2px;padding:7px 10px;border-bottom:1px solid #dcd9cf}
 .ranges a{flex:1;text-align:center;padding:4px 2px;font-size:10px;color:#6a6963;
  text-decoration:none;border-radius:4px;letter-spacing:.02em}
@@ -1285,37 +1358,6 @@ function headlineCard(sessions: readonly Session[], scope: string): string {
 </div>`
 }
 
-/**
- * The session list: every session as one row you can open.
- *
- * A dashboard that inlines every ledger stops working at about twenty
- * sessions; this machine has over a thousand. So the index carries only what
- * is cheap to know, and the reading happens one session at a time.
- */
-function sessionList(sessions: readonly Session[]): string {
-  if (sessions.length === 0) return '<p class="empty">没有会话。</p>'
-  const rows = sessions.map(session => {
-    const t = summarise([session])
-    const dir = session.cwd === undefined ? '' : (session.cwd.split('/').pop() ?? '')
-    const events = session.events === undefined ? '' : String(session.events.length)
-    return `<tr>`
-      + `<td><a href="/s/${encodeURIComponent(session.id)}">${esc(session.id.slice(0, 12))}</a></td>`
-      + `<td class="kind">${esc(session.agent)}</td>`
-      + `<td class="n">${esc(when(session.startedAt))}</td>`
-      + `<td class="num">${t.steps}</td>`
-      + `<td class="num">${t.toolCalls}</td>`
-      + `<td class="num">${events}</td>`
-      + `<td>${esc(dir)}${session.gitBranch === undefined ? '' : ` <span class="dim">${esc(session.gitBranch)}</span>`}</td>`
-      + `</tr>`
-  })
-  return `<table><thead><tr>`
-    + `<th style="width:130px">会话</th><th style="width:92px">AGENT</th>`
-    + `<th style="width:130px">开始</th><th style="width:52px">步</th>`
-    + `<th style="width:52px">工具</th><th style="width:52px">账本</th><th>位置</th>`
-    + `</tr></thead><tbody>${rows.join('')}</tbody></table>`
-}
-
-/** One table of per-agent figures: agents down the side, measures across. */
 function profileTable(
   rows: readonly AgentProfile[],
   columns: readonly { head: string; of: (p: AgentProfile) => string }[],
@@ -1367,64 +1409,6 @@ function comparison(sessions: readonly Session[]): string {
   <div class="src">花了多少 · 这几个数几乎全由「你拿它干什么」决定 —— 两家做的活不一样，
     差异就不是它们的差异。只看，别当结论</div>
 </div>`
-}
-
-/**
- * The index a server hands out: what it all cost, and what there is to open.
- * @param sessions - the sessions that were parsed, newest first.
- * @param scanned - how many transcripts exist on this machine in total.
- * @param agents - which agents this machine has transcripts from.
- * @param active - the agent being shown, or `all`.
- * @returns a complete, self-contained HTML document.
- */
-export function renderIndex(
-  sessions: readonly Session[],
-  scanned: number,
-  agents: readonly string[] = [],
-  active = 'all',
-): string {
-  const totals = summarise(sessions)
-  const agentRows = [...byAgent(sessions).entries()]
-    .map(([agent, list]) => ({ label: agent.toUpperCase(), value: averageStatic(list).total }))
-    .filter(r => r.value > 0)
-    .sort((a, b) => b.value - a.value)
-  const toolRows = totals.topTools.slice(0, 12).map(t => ({ label: t.name.toUpperCase(), value: t.calls }))
-
-  const perAgent = agentRows.length === 0 ? '' : `<div class="card wide">
-  <h2>各 agent 开口前先背了多少</h2>
-  <div class="sub">每次请求的固定负载均值 · 系统提示词 + 工具 schema</div>
-  ${tickChart(agentRows, 'TOKEN')}
-  <div class="src">固定负载 · 实测自真实请求</div>
-</div>`
-
-  const tools = toolRows.length === 0 ? '' : `<div class="card wide">
-  <h2>哪些工具真的跑了</h2>
-  <div class="sub">已读会话中的调用次数</div>
-  ${tickChart(toolRows, '次调用')}
-  <div class="src">工具调用 · 取自会话记录</div>
-</div>`
-
-  return page('Agent Ledger', `<div class="lede">
-  <h1>你的 agent 到底做了什么</h1>
-  <p>数据来自 Claude Code 与 Codex 自己写在本机的会话记录。点开任意一个会话，看它这一趟走了什么路。
-     全程只读本地文件，不上传任何内容。</p>
-  <div class="meta">本机共 ${scanned} 个会话记录 · 已读最近 ${sessions.length} 个 · ${totals.steps} 步</div>
-</div>
-${headlineCard(sessions, `最近 ${sessions.length} 个会话 · 本机共 ${scanned} 个`)}
-${comparison(sessions)}
-${perAgent}
-${tools}
-<div class="card wide">
-  <h2>会话</h2>
-  <div class="sub">按最后写入时间排序 · 点会话号打开轨迹</div>
-</div>
-<div class="ledger">
-  ${agents.length < 2 ? '' : `<div class="modes">${
-    ['all', ...agents].map(key => `<a href="?agent=${encodeURIComponent(key)}"${
-      key === active ? ' class="on"' : ''}>${key === 'all' ? '全部' : esc(key)}</a>`).join('')
-  }</div>`}
-  ${sessionList(sessions)}
-</div>`)
 }
 
 /**

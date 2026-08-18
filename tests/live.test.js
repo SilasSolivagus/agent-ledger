@@ -143,21 +143,6 @@ test('two vendors get two boards, and only one is shown at a time', async () => 
   } finally { stop() }
 })
 
-test('--history is how you get the old browser back', async () => {
-  const claude = await mkdtemp(join(tmpdir(), 'agent-ledger-live-h-'))
-  await writeFile(join(claude, 'session-yesterday.jsonl'), claudeTurn('OLD-WORK-FROM-BEFORE', 0), 'utf8')
-  const server = createLedgerServer({
-    port: 0, limit: 40, history: true, roots: { ...noSources(claude), claude },
-  }, ms(2))
-  const base = await new Promise(resolve => {
-    server.listen(0, '127.0.0.1', () => resolve(`http://127.0.0.1:${server.address().port}`))
-  })
-  try {
-    const body = await (await fetch(`${base}/`)).text()
-    assert.match(body, /session-yesterday/, 'history mode lists what the board hides')
-  } finally { server.close(); server.closeAllConnections() }
-})
-
 test('a session that has spoken but not yet been answered is on the board', async () => {
   const { claude, get, stop } = await watched(ms(2))
   try {

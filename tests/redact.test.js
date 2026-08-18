@@ -82,15 +82,21 @@ async function planted() {
 
 async function pages(roots, redact) {
   const server = createLedgerServer({
-    port: 0, limit: 40, redact, history: true, roots: { ...noSources(roots.codex), ...roots },
+    port: 0, limit: 40, redact, roots: { ...noSources(roots.codex), ...roots },
   })
   const base = await new Promise(resolve => {
     server.listen(0, '127.0.0.1', () => resolve(`http://127.0.0.1:${server.address().port}`))
   })
   try {
     const out = {}
-    for (const path of ['/', '/s/session-leak', '/s/2026-08-14T11-00-00-leak']) {
-      out[path] = await (await fetch(`${base}${path}`)).text()
+    // The board's default window starts when the server does, and this
+    // fixture was planted before that — so the widest window is what puts the
+    // planted markers in front of the redactor at all.
+    const paths = { '/': '/?agent=claude-code&range=all',
+      '/s/session-leak': '/s/session-leak',
+      '/s/2026-08-14T11-00-00-leak': '/s/2026-08-14T11-00-00-leak' }
+    for (const [key, path] of Object.entries(paths)) {
+      out[key] = await (await fetch(`${base}${path}`)).text()
     }
     return out
   } finally { server.close(); server.closeAllConnections() }
