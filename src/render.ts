@@ -369,9 +369,9 @@ export function trajectoryTable(
   const note = (px === 0
     ? `铺满本页 · 1 秒 ≈ ${effective.toFixed(1)} px —— 这一档随会话长短伸缩，条长只在本页内可比，换个会话就不能比`
     : `1 秒 = ${px} px`)
-    + `${compress ? ' · 已删掉没有任何操作在跑的空档，操作本身的长度是真的' : ' · 真实时间轴'}`
+    + `${compress ? ' · 已压缩无操作运行的空档，操作本身的长度未改' : ' · 真实时间轴'}`
     + ` · 点轴上的块跳到那一行 · 实测 ${measured.length} 条，最长 ${ms(longest)}`
-    + ` · 模型与你的发言只打刻度，因为那段时间已经由它下面的工具条画过了`
+    + ` · 模型与用户发言只标刻度，该时段已由其下方的工具条表示`
   const dropped = all.length - events.length
   const more = dropped === 0 ? ''
     : ` · <a href="/s/${encodeURIComponent(session.id)}">更早的 ${dropped} 条</a>`
@@ -590,8 +590,8 @@ function crossVendor(
      ${comparable.length === 0 ? '这个窗口里还没有一家' : `目前只有 ${
        comparable.map(a => esc(agentLabel(a))).join('、')} 一家`}报告了步。</p>
   ${mute.length === 0 ? '' : `<p class="dimp">${mute.map(a => esc(agentLabel(a))).join('、')
-    } 在这个窗口里有会话，但不记录步 —— 不是零，是这个来源没有这个字段，所以进不了这张表。</p>`}
-  <p class="dimp">换另一个 agent 干点活，或者把窗口拉宽到「今天」「全部」。</p>
+    } 在这个窗口里有会话，但不记录步 —— 不是零，是该来源没有这一字段。</p>`}
+  <p class="dimp">运行另一个 agent，或将窗口放宽至「今天」「全部」。</p>
 </div>`
   }
   const totals = summarise(sessions)
@@ -642,8 +642,7 @@ function emptyBoard(
   if (watching.length === 0) {
     return `<div class="waiting">
   <h1>这台机器上没找到 agent</h1>
-  <p>没有任何一个来源的记录目录存在，所以没有板子可开。装上 Claude Code、Codex 或 Cursor 其中之一，
-     或者让 WorkBuddy 建起它的数据库，重启这个命令即可。</p>
+  <p>未检测到任何来源的记录目录。安装 Claude Code、Codex 或 Cursor 其中之一，或等待 WorkBuddy 建立数据库后，重新运行本命令。</p>
   <p class="dimp">找过这些位置：<br/>${looked.map(one => esc(one)).join('<br/>')}</p>
 </div>`
   }
@@ -750,7 +749,10 @@ ${statusBar(session)}`
   <nav class="atabs">${tabs}</nav>
   ${windows}
   <div class="entries">${entries}</div>
-  <div class="sidefoot">${capped === undefined ? '' : `另有 ${capped.dropped} 个会话没读进来（每来源上限 ${capped.limit}，用 --limit 调）<br/>`}<a class="home" href="${HOME}" target="_blank" rel="noreferrer">runledger on GitHub ↗</a><br/><span class="wnote">${windowNote(since, range)}</span> · ${refreshSeconds === null ? `<b>已暂停</b> · <a href="?agent=${encodeURIComponent(active)}${keepRange}">继续自刷</a>` : `每 ${refreshSeconds} 秒自刷 · <a href="?agent=${encodeURIComponent(active)}${keepRange}&amp;live=off">暂停</a>`} · 只读本地文件</div>
+  <a class="home" href="${HOME}" target="_blank" rel="noreferrer">
+    <span class="hlabel">开源项目 · runledger</span>
+    <span class="hgo">GitHub ↗</span></a>
+  <div class="sidefoot">${capped === undefined ? '' : `另有 ${capped.dropped} 个会话没读进来（每来源上限 ${capped.limit}，用 --limit 调）<br/>`}<span class="wnote">${windowNote(since, range)}</span> · ${refreshSeconds === null ? `<b>已暂停</b> · <a href="?agent=${encodeURIComponent(active)}${keepRange}">继续自刷</a>` : `每 ${refreshSeconds} 秒自刷 · <a href="?agent=${encodeURIComponent(active)}${keepRange}&amp;live=off">暂停</a>`} · 只读本地文件</div>
 </aside>
 <main class="main">${main}</main>`, refreshSeconds ?? undefined, 'app', true, pulse)
 }
@@ -908,7 +910,7 @@ function spendCard(d: Digest): string {
     ${fig(String(spend.priced), '计价记录')}
     ${fig(String(spend.unpriced), '无价记录')}
   </div>
-  ${rows === '' ? '' : `<div class="src">这些记录烧了 token，但价钱算不出来 —— 不是零</div>
+  ${rows === '' ? '' : `<div class="src">以下记录消耗了 token，但无法计价 —— 不是零</div>
   <table class="mini"><tbody>${rows}</tbody></table>`}
   <div class="src">基础档价格，未区分长上下文档与 flex / priority 档 · 价目表取自 ${PRICED_AT}，由 \`npm run prices:check\` 比对上游</div>
 </div>`
@@ -923,7 +925,7 @@ export function renderDigest(d: Digest, colour = false): string {
   const timed = d.durations.length > 0 || d.spanMs > 0
   const metered = d.input + d.output + d.cacheRead + d.cacheWrite > 0
   const missing = [
-    timed ? '' : '耗时：这个来源不给记录打时间戳，无法测量，也无法从相邻记录推算',
+    timed ? '' : '耗时：该来源不为记录写入时间戳，无法测量，也无法由相邻记录推算',
     metered ? '' : 'token：这个来源不报告用量，输入、输出与缓存都无从得知',
   ].filter(v => v !== '')
   const gap = missing.length === 0 ? '' : `<div class="card wide">
@@ -955,13 +957,13 @@ export function renderDigest(d: Digest, colour = false): string {
       // "where is the money" — which is the answer to "did I bury it".
       d.spend.priced === 0 ? fig('—', '花费') : fig(moneyAll(d.spend.totals), '花费')}
   </div>
-  <div class="src">总量 = 新鲜输入 + 输出 + 缓存读 + 缓存写，与厂商用量页同口径 —— 缓存读通常吃掉绝大部分，所以它比「新鲜输入」大一两个数量级是正常的</div>
+  <div class="src">总量 = 新鲜输入 + 输出 + 缓存读 + 缓存写，与厂商用量页同口径 —— 缓存读通常占绝大部分，因此总量比「新鲜输入」高一到两个数量级属正常</div>
 </div>`
   return `${headline}
 ${gap}
 ${timed ? durationField(d) : ''}
 ${timed ? rankedCard('工具耗时', '按总耗时排序，非按调用次数', d.tools, ms, '') : rankedCard(
-    '工具调用', '按调用次数排序 —— 这个来源不记时间，无法按耗时排', d.tools,
+    '工具调用', '按调用次数排序 —— 该来源不记录时间，无法按耗时排序', d.tools,
     v => v.toLocaleString('en-US'), '次')}
 ${metered ? tokenCard(d, colour) : ''}
 ${(() => {
@@ -1050,7 +1052,7 @@ export function renderSourceBoard(details: readonly WorkbuddyDetail[]): string {
 </div>
 ${field === '' ? '' : `<div class="card wide">
   <h2>模型分布</h2>
-  <div class="sub">按会话数计 —— 这个来源不记录逐步 token，所以无法按输出量分</div>
+  <div class="sub">按会话数计 —— 该来源不记录逐步 token，无法按输出量划分</div>
   ${field}
 </div>`}
 <div class="card wide">
@@ -1292,9 +1294,17 @@ body:has(.app){padding:0}
    Lightness carries importance; there is no colour anywhere. */
 /* A section break inside the single-file export, so a reader scrolling a
    megabyte can tell whose figures they are looking at. */
-.home{color:#6b6a63;text-decoration:none;border-bottom:1px solid #cfccc2}
-.home:hover{color:#1c1c1a}
-.sidefoot .home{display:inline-block;margin-bottom:3px}
+/* Not a footnote. The link is how anyone who receives an exported page finds
+   the tool at all, so it gets a row of its own rather than a corner of one. */
+.home{display:flex;align-items:center;justify-content:space-between;gap:10px;
+ margin:auto 10px 8px;padding:9px 12px;border:1px solid #dcd9cf;border-radius:10px;
+ color:#4a4944;text-decoration:none;background:#f2f0e9}
+.home:hover{background:#eae7dd;border-color:#c9c5b8}
+.hlabel{font-size:11px;font-weight:600;letter-spacing:.01em}
+.hgo{font-size:10px;color:#8f8e88;white-space:nowrap}
+.lede .home{display:inline;margin:0;padding:0;border:0;background:none;
+ color:#6b6a63;border-bottom:1px solid #cfccc2}
+.lede .home:hover{color:#1c1c1a;background:none}
 .sub-lede{margin:46px 0 18px;padding-top:22px;border-top:1px solid #dcd9cf}
 .sub-lede h2{font-size:22px;font-weight:700;margin:0}
 .digest{display:grid;grid-template-columns:1fr 1fr;gap:14px;align-items:start}
@@ -1520,8 +1530,7 @@ function comparison(sessions: readonly Session[], colour = false): string {
 
   return `<div class="card wide">
   <h2>两家各自长什么样</h2>
-  <div class="sub">不是排名。会话记录里没有「答得好不好」「活干完没有」「你有没有重问一遍」，
-    所以「谁更强」在这里没有分子——下面只有它们各自怎么干活、各花了多少。</div>
+  <div class="sub">不是排名。会话记录不包含回答质量、任务是否完成、是否重新提问，因此「谁更强」缺少分子。下列指标只说明两者各自的工作方式与消耗。</div>
 </div>
 <div class="ledger">
   ${profileTable(rows, [
@@ -1531,7 +1540,7 @@ function comparison(sessions: readonly Session[], colour = false): string {
     { head: '参数中位', of: p => num(p.argTokens) },
     { head: '缓存命中', of: p => pct(p.cacheHitRate) },
   ], colour)}
-  <div class="src">怎么干活 · 这几个数几乎不随任务大小变，是两家 harness 的设计差异，可以直接比</div>
+  <div class="src">怎么干活 · 这几项基本不随任务规模变化，反映两者 harness 的设计差异，可直接比较</div>
 </div>
 <div class="ledger">
   ${profileTable(rows, [
@@ -1542,9 +1551,8 @@ function comparison(sessions: readonly Session[], colour = false): string {
     { head: '每轮墙钟', of: p => `${num(p.spanPerTurn)}s` },
     { head: '轮数', of: p => num(p.turns) },
   ], colour)}
-  ${setAside === 0 ? '' : `<div class="src">另有 ${String(setAside)} 个<b>未能识别来源</b>的记录没进这张表 —— 那是代理没认出调用方，不是一个厂商，它的行为指标全为零只因为代理记录里没有逐条事件</div>`}
-  <div class="src">花了多少 · 这几个数几乎全由「你拿它干什么」决定 —— 两家做的活不一样，
-    差异就不是它们的差异。只看，别当结论</div>
+  ${setAside === 0 ? '' : `<div class="src">另有 ${String(setAside)} 个<b>未能识别来源</b>的记录没进这张表 —— 代理未能识别调用方，它不是一个厂商；其行为指标为零，是因为代理记录不含逐条事件</div>`}
+  <div class="src">花了多少 · 这几项主要由任务本身决定 —— 两者承担的任务不同时，差异不归因于 agent。仅供参考，不作为结论</div>
 </div>`
 }
 
@@ -1633,10 +1641,9 @@ export function renderDashboard(
 
   return page('Agent Ledger — 你的 agent 到底做了什么', `<div class="lede">
   <h1>你的 agent 到底做了什么</h1>
-  <p>数据来自 Claude Code 与 Codex 自己写在本机的会话记录。每一个数字都对应一次真实请求：
-     开口前先背了什么、回来了什么、花了多久、动用了哪些工具。全程只读本地文件，不上传任何内容。</p>
-  <div class="meta">${totals.sessions} 个会话 · ${totals.steps} 步 · 本地读取 ·
-    <a class="home" href="${HOME}" target="_blank" rel="noreferrer">runledger ↗</a></div>
+  <p>数据来自各 agent 写在本机的会话记录，每个数字对应一次真实请求。全程只读本地文件，不上传任何内容。</p>
+  <div class="meta">${totals.sessions} 个会话 · ${totals.steps} 步 · 本地读取</div>
+  <div class="meta"><a class="home" href="${HOME}" target="_blank" rel="noreferrer">本页由开源工具 runledger 生成 · GitHub ↗</a></div>
 </div>
 ${headline}
 ${comparison(sessions, colour)}

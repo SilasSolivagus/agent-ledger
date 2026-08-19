@@ -134,8 +134,8 @@ test('the comparison keeps every disclaimer it was written with', async () => {
   try {
     const body = await get('/?agent=all')
     assert.match(body, /不是排名/)
-    assert.match(body, /答得好不好/, 'it must say out loud what is unmeasurable')
-    assert.match(body, /只看，别当结论/, 'the task-bound group must be marked as such')
+    assert.match(body, /回答质量/, 'it must say out loud what is unmeasurable')
+    assert.match(body, /仅供参考，不作为结论/, 'the task-bound group must be marked as such')
   } finally { stop() }
 })
 

@@ -82,7 +82,7 @@ test('the cross-vendor comparison is in the file too, disclaimers and all', () =
   const html = renderDashboard(two())
   assert.match(html, /两家各自长什么样/)
   assert.match(html, /不是排名/)
-  assert.match(html, /只看，别当结论/)
+  assert.match(html, /仅供参考，不作为结论/)
 })
 
 test('one agent alone gets its summary but no comparison', () => {

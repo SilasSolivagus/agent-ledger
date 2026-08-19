@@ -45,10 +45,12 @@ npx runledger serve
 agent-ledger serve --port 5000 --limit 100   # 换端口 · 每个 agent 各读最近 100 个
 agent-ledger serve --no-open                 # 不自动开浏览器
 agent-ledger serve --redact                  # 只上形状，不上内容（录屏/演示用）
-agent-ledger serve --fresh                   # 丢掉上次的基线，从现在开始看
+agent-ledger serve --fresh                   # 丢弃上次的基线，从现在开始
+agent-ledger serve --color                   # 彩色版：色相区分厂商，明度仍表示数量
 agent-ledger sessions                        # 列出能看到的会话
 agent-ledger report --out ledger.html        # 导出一个自包含 HTML 文件
 agent-ledger report --redact --out safe.html # 导出一份可以给别人看的
+agent-ledger report --color --out x.html     # 导出彩色版（默认单色）
 ```
 
 `report` 把读到的**每一个**会话都画进同一个文件，按时间倒序。默认 40 个会话大约 2 MB——要小一点用 `--limit`。
@@ -108,6 +110,21 @@ Claude Code 和 Codex 都有。你说的话有黑色标记，工具调用有土�
 **故意保留的**：工具名（`Bash`、`exec_command`、`apply_patch`）。它们是轨迹的实质，且不含你的内容。**唯一要知道的例外**：MCP 工具名可能带内部服务名（`mcp__yourcompany__xxx`）。介意的话就别分享这一页。
 
 脱敏在数据模型上做、不在 HTML 上做——否则每加一个模板就是一个新的漏点。测试的方式是往两种记录格式的**每一个**能装内容的字段里埋一个唯一标记，渲染完断言一个都搜不到。真实数据上验过（1.3 MB、25 个会话的报告）：home 路径 787 处 → 0，命令原文 192 处 → 0，分支名 38 处 → 0，而 606 个工具名、77 个轮次标记、25 条轨迹原样保留，总账数字一个没变。
+
+## 彩色版：`--color`
+
+默认单色。加 `--color` 后，**色相表示类别，明度仍然表示数量**——这两个通道互不侵占。
+
+单色只有明度一个通道，多系列图里它被迫同时承担两件事：既要区分是哪个系列，又要表示谁更大。色相接管前者之后，明度才只负责后者。
+
+上色的位置只有四处：厂商 tab、跨厂商对比表、token 消耗（新鲜输入 / 缓存读 / 缓存写 / 输出四个类别）、模型分布。其余保持单色，两条规矩决定：
+
+- **单序列图不上色相。** 没有类别可区分时，色相不编码任何信息，那是装饰。会话并发图因此保持单色。
+- **一张图最多一个分类通道。** 已经按大小排序的图不再叠加色相，否则两个通道表达同一件事。
+
+色板不是手选的：明度固定在 L\* 24 / 42 / 60 / 76 / 90 五档，彩度取该明度下 sRGB 的上限。跨色系同档明度差 < 0.3 L\*——若某个色系天生更深，它会被读成更重要，而重要性由明度表示。色板源自 [lieflat-charts](https://github.com/SilasSolivagus/lieflat-charts) 的 `color-category` 分支。
+
+`report --out` 默认仍是单色：导出的文件会发给别人，单色是更保守的选择。
 
 ## 图表的一条规矩
 
