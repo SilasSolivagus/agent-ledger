@@ -26,7 +26,7 @@ export const USAGE = `agent-ledger — see what your coding agent actually did
 
 Usage:
   agent-ledger serve [--port <n>] [--refresh <s>] [--fresh] [--limit <n>]
-                     [--no-open] [--redact]
+                     [--color] [--no-open] [--redact]
         a board showing what your agents are doing now, one per vendor,
         plus a 跨厂商 tab that puts two of them on the same scale
         only activity after it starts — whatever is already on disk stays off,
@@ -35,10 +35,12 @@ Usage:
         away the afternoon; --fresh starts watching from now instead
         --refresh seconds between the board's own reloads (default 5)
         --limit sessions read per agent once the window is wider than that
+        --color hue for which vendor, lightness still for how much; default
+                is the monochrome palette, which is what an export should be
         --redact serve the shape only — for a screen share or a demo
 
   agent-ledger report [--out <file>] [--limit <n>] [--agent <kind>]
-                     [--rows <n>] [--full] [--redact]
+                     [--rows <n>] [--full] [--color] [--redact]
         read what Claude Code and Codex already wrote down, and render it
         --agent keeps one agent only; --rows caps trajectory rows per session
         --full includes the expandable originals, which multiply file size
@@ -139,7 +141,7 @@ async function record(port: number): Promise<number> {
 /** Render everything recorded. */
 async function report(
   out: string | undefined, limit: number, hide: boolean,
-  agent: string | undefined, rows: number, full: boolean,
+  agent: string | undefined, rows: number, full: boolean, colour = false,
 ): Promise<number> {
   const all = [...await readAllSessions(limit), ...await loadSessions()]
   const found = agent === undefined ? all : all.filter(session => session.agent === agent)
@@ -151,7 +153,7 @@ async function report(
     return 1
   }
   const sessions = redactAll(found, hide)
-  const html = renderDashboard(sessions, rows, full)
+  const html = renderDashboard(sessions, rows, full, colour)
   if (out === undefined) { console.log(html); return 0 }
   await writeFile(out, html, 'utf8')
   const totals = summarise(sessions)
@@ -193,6 +195,7 @@ export async function main(argv: readonly string[]): Promise<number> {
         refreshSeconds: Number(flag('--refresh') ?? 5),
         state: defaultStatePath(),
         fresh: rest.includes('--fresh'),
+        colour: rest.includes('--color'),
       },
       !rest.includes('--no-open'),
     )
@@ -200,6 +203,7 @@ export async function main(argv: readonly string[]): Promise<number> {
     case 'report': return await report(
       flag('--out'), Number(flag('--limit') ?? 40), rest.includes('--redact'),
       flag('--agent'), Number(flag('--rows') ?? 200), rest.includes('--full'),
+      rest.includes('--color'),
     )
     case 'sessions': return await list(Number(flag('--limit') ?? 40))
     case undefined: case '-h': case '--help': console.log(USAGE); return 0

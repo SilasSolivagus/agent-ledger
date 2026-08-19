@@ -17,6 +17,7 @@ import { profiles, type AgentProfile } from './profile.js'
 import { T, esc, jitter, ms, money, moneyAll, span } from './html.js'
 import { costOf, priceNote, spendOf, PRICED_AT } from './price.js'
 import { RANGES } from './live.js'
+import { laddersFor, hueFor, MONO } from './palette.js'
 
 /**
  * Where this came from, for the page that travels.
@@ -572,7 +573,9 @@ function grossTokens(t: { input: number; output: number; cacheRead: number; cach
  * @param range - which window, for the label that names it.
  * @returns the comparison panels, or an invitation when only one vendor ran.
  */
-function crossVendor(sessions: readonly Session[], since: number, range: string): string {
+function crossVendor(
+  sessions: readonly Session[], since: number, range: string, colour: boolean,
+): string {
   const kinds = new Set(sessions.map(one => one.agent))
   // Two vendor names is not two comparable things. Every figure in this panel
   // is per step, and a source that records no steps — WorkBuddy keeps only
@@ -612,7 +615,7 @@ function crossVendor(sessions: readonly Session[], since: number, range: string)
   return `<div class="digesthead"><span class="who">跨厂商对比</span>
   <span class="dim">${[...kinds].map(a => esc(agentLabel(a))).join(' · ')} · ${windowNote(since, range)}</span></div>
 <div class="digest">${headlineCard(sessions, `${sessions.length} 个会话 · ${[...kinds].length} 家`)}
-${comparison(sessions)}
+${comparison(sessions, colour)}
 ${payload}
 ${tools}</div>`
 }
@@ -667,6 +670,8 @@ export function renderLive(
   looked: readonly string[] = [],
   /** Fingerprint of what is on disk, so a refresh can ask before it fetches. */
   pulse = '',
+  /** `--color`: hue encodes which vendor, lightness still encodes how much. */
+  colour = false,
 ): string {
   const agents = [...boards.keys()]
   // Every link on this page has to carry the window, or clicking a vendor
@@ -693,7 +698,11 @@ export function renderLive(
   const shownTabs = crossable ? ['all', ...vendorTabs] : vendorTabs
   const tabs = shownTabs.map(key => {
     const count = key === 'all' ? everySession.length : (boards.get(key) ?? []).length
-    return `<a class="atab${key === active ? ' on' : ''}${key === 'all' ? ' cross' : ''}" href="?agent=${encodeURIComponent(key)}${keepRange}">
+    // The one place "Anthropic is rust" has to be true, because every other
+    // mark that carries a vendor's hue is read against this tab.
+    const bar = colour && key !== 'all'
+      ? ` style="box-shadow:inset 3px 0 0 ${hueFor(key, vendorTabs)[0]}"` : ''
+    return `<a class="atab${key === active ? ' on' : ''}${key === 'all' ? ' cross' : ''}"${bar} href="?agent=${encodeURIComponent(key)}${keepRange}">
     <span class="vendor">${key === 'all' ? '跨厂商' : esc(AGENT_VENDOR[key as AgentKind]?.vendor ?? key)}</span>
     <span class="product">${key === 'all' ? '放在一把尺子上' : esc(AGENT_VENDOR[key as AgentKind]?.product ?? '')}</span>
     <span class="count">${count === 0 ? '—' : String(count)}</span></a>`
@@ -722,13 +731,13 @@ export function renderLive(
 
   const noRecords = list.length > 0 && list.every(one => one.steps.length === 0 && (one.events ?? []).length === 0)
   const main = active === 'all' && session === undefined
-    ? crossVendor(everySession, since, range)
+    ? crossVendor(everySession, since, range, colour)
     : session === undefined && list.length > 0
     ? `<div class="digesthead"><span class="who">${esc(agentLabel(active))}</span>
   <span class="dim">总览 · ${list.length} 个活跃会话 · ${windowNote(since, range)}</span></div>
 <div class="digest">${noRecords
     ? renderSourceBoard(sourceDetails.filter(d => list.some(one => one.id === d.id)))
-    : renderDigest(digest(active, list))}</div>`
+    : renderDigest(digest(active, list), colour)}</div>`
     : session === undefined
     ? emptyBoard(active, watching, looked, range)
     : `${boardHeading(session)}
@@ -833,7 +842,7 @@ function concurrencyCard(d: Digest): string {
 }
 
 /** Token accounting for the window. */
-function tokenCard(d: Digest): string {
+function tokenCard(d: Digest, colour: boolean): string {
   const rows = [
     { label: '新鲜输入', value: d.input },
     { label: '缓存读', value: d.cacheRead },
@@ -846,7 +855,9 @@ function tokenCard(d: Digest): string {
   return `<div class="card wide">
   <h2>token 消耗</h2>
   <div class="sub">共 ${n(sum)} token 经手 · 缓存命中 ${(d.cacheHitRate * 100).toFixed(0)}%</div>
-  ${hundredField(rows.map(r => ({ label: `${r.label} ${n(r.value)}`, pct: (r.value / sum) * 100 })))}
+  ${hundredField(
+    rows.map(r => ({ label: `${r.label} ${n(r.value)}`, pct: (r.value / sum) * 100 })),
+    colour ? laddersFor(rows.map(r => r.label), true) : undefined)}
   <table class="mini"><tbody>${rows.map(r => `<tr><td>${esc(r.label)}</td>`
     + `<td class="num">${n(r.value)}</td>`
     + `<td class="num dim">${((r.value / sum) * 100).toFixed(1)}%</td></tr>`).join('')}</tbody></table>
@@ -903,7 +914,7 @@ function spendCard(d: Digest): string {
 </div>`
 }
 
-export function renderDigest(d: Digest): string {
+export function renderDigest(d: Digest, colour = false): string {
   const n = (v: number): string => v.toLocaleString('en-US')
   // A source can record what happened without recording when or how much.
   // Cursor stamps no record and reports no usage, so every timing and token
@@ -952,14 +963,16 @@ ${timed ? durationField(d) : ''}
 ${timed ? rankedCard('工具耗时', '按总耗时排序，非按调用次数', d.tools, ms, '') : rankedCard(
     '工具调用', '按调用次数排序 —— 这个来源不记时间，无法按耗时排', d.tools,
     v => v.toLocaleString('en-US'), '次')}
-${metered ? tokenCard(d) : ''}
+${metered ? tokenCard(d, colour) : ''}
 ${(() => {
     const sum = d.models.reduce((t, m) => t + m.totalMs, 0)
     if (sum === 0 && d.skills.length === 0 && d.subagents.length === 0) return ''
     // The ring earns its space only when there is a composition to see. Two
     // values are a sentence, not a chart.
     const ring = d.models.length >= 3
-      ? tickDonut(d.models.slice(0, 5).map(m => ({ label: m.name, pct: (m.totalMs / sum) * 100 })))
+      ? tickDonut(
+        d.models.slice(0, 5).map(m => ({ label: m.name, pct: (m.totalMs / sum) * 100 })),
+        colour ? laddersFor(d.models.slice(0, 5).map(m => m.name), true) : undefined)
       : ''
     /**
      * One attributed breakdown.
@@ -1266,6 +1279,7 @@ body:has(.app){padding:0}
 /* Chips wrap as a group rather than stretch to equal widths: with five
    windows in a 235px column, equal widths broke 「本次监视」across two lines
    mid-word. Each chip keeps its own width and the row wraps instead. */
+.vdot{display:inline-block;width:8px;height:8px;border-radius:99px;margin-right:7px;vertical-align:1px}
 .ranges{display:flex;flex-wrap:wrap;gap:3px;padding:7px 8px;border-bottom:1px solid #dcd9cf}
 .ranges a{flex:0 1 auto;white-space:nowrap;text-align:center;padding:4px 7px;
  font-size:10px;color:#6a6963;text-decoration:none;border-radius:4px;letter-spacing:.02em}
@@ -1468,9 +1482,17 @@ function headlineCard(sessions: readonly Session[], scope: string): string {
 function profileTable(
   rows: readonly AgentProfile[],
   columns: readonly { head: string; of: (p: AgentProfile) => string }[],
+  colour = false,
 ): string {
   const head = columns.map(c => `<th class="num">${esc(c.head)}</th>`).join('')
-  const body = rows.map(row => `<tr><td class="kind">${esc(row.agent)}</td>`
+  // The whole point of this table is two agents side by side, and until now
+  // both rows were the same grey — the reader had to keep the row order in
+  // their head. A dot in the vendor's own hue is the smallest thing that
+  // fixes it without turning the numbers into a colour chart.
+  const names = rows.map(r => r.agent)
+  const body = rows.map(row => `<tr><td class="kind">${
+    colour ? `<span class="vdot" style="background:${hueFor(row.agent, names)[0]}"></span>` : ''
+  }${esc(row.agent)}</td>`
     + columns.map(c => `<td class="num">${esc(c.of(row))}</td>`).join('')
     + '</tr>').join('')
   return `<table><thead><tr><th style="width:120px">AGENT</th>${head}</tr></thead>`
@@ -1485,7 +1507,7 @@ const num = (v: number): string => v.toLocaleString('en-US')
  * Two agents side by side, with the line between what compares and what does
  * not drawn on the page rather than left to the reader.
  */
-function comparison(sessions: readonly Session[]): string {
+function comparison(sessions: readonly Session[], colour = false): string {
   // `unknown` is what the proxy records when it could not tell who was
   // calling. It is not a product, and a row for it sits beside two real
   // vendors reading as a third one that did nothing — every behavioural
@@ -1508,7 +1530,7 @@ function comparison(sessions: readonly Session[]): string {
     { head: '每次调用几步', of: p => dec(p.stepsPerCall) },
     { head: '参数中位', of: p => num(p.argTokens) },
     { head: '缓存命中', of: p => pct(p.cacheHitRate) },
-  ])}
+  ], colour)}
   <div class="src">怎么干活 · 这几个数几乎不随任务大小变，是两家 harness 的设计差异，可以直接比</div>
 </div>
 <div class="ledger">
@@ -1519,7 +1541,7 @@ function comparison(sessions: readonly Session[]): string {
     { head: '每轮输出', of: p => num(p.outputPerTurn) },
     { head: '每轮墙钟', of: p => `${num(p.spanPerTurn)}s` },
     { head: '轮数', of: p => num(p.turns) },
-  ])}
+  ], colour)}
   ${setAside === 0 ? '' : `<div class="src">另有 ${String(setAside)} 个<b>未能识别来源</b>的记录没进这张表 —— 那是代理没认出调用方，不是一个厂商，它的行为指标全为零只因为代理记录里没有逐条事件</div>`}
   <div class="src">花了多少 · 这几个数几乎全由「你拿它干什么」决定 —— 两家做的活不一样，
     差异就不是它们的差异。只看，别当结论</div>
@@ -1531,7 +1553,9 @@ function comparison(sessions: readonly Session[]): string {
  * @param session - the session to show.
  * @returns a complete, self-contained HTML document.
  */
-export function renderSession(session: Session, zoom = 'mid', compress = true): string {
+export function renderSession(
+  session: Session, zoom = 'mid', compress = true, colour = false,
+): string {
   const body = `<div class="lede">
   <div class="meta"><a href="/">← 全部会话</a></div>
   <h1>会话 ${esc(session.id.slice(0, 12))}</h1>
@@ -1557,7 +1581,9 @@ ${headlineCard([session], '本次会话')}
  * @param details - whether rows expand to the untruncated original.
  * @returns a complete, self-contained HTML document.
  */
-export function renderDashboard(sessions: readonly Session[], cap = 200, details = false): string {
+export function renderDashboard(
+  sessions: readonly Session[], cap = 200, details = false, colour = false,
+): string {
   const totals = summarise(sessions)
   const agents = byAgent(sessions)
 
@@ -1592,7 +1618,7 @@ export function renderDashboard(sessions: readonly Session[], cap = 200, details
     .sort((a, b) => b[1].length - a[1].length)
     .map(([agent, list]) => `<div class="lede sub-lede"><h2>${esc(agentLabel(agent))}</h2>
   <p>${list.length} 个会话 · 下面每个数字只来自这一家</p></div>
-<div class="digest">${renderDigest(digest(agent, list))}</div>`)
+<div class="digest">${renderDigest(digest(agent, list), colour)}</div>`)
     .join('\n')
 
   // Newest first, across agents. Read order is the one thing a single file can
@@ -1613,7 +1639,7 @@ export function renderDashboard(sessions: readonly Session[], cap = 200, details
     <a class="home" href="${HOME}" target="_blank" rel="noreferrer">runledger ↗</a></div>
 </div>
 ${headline}
-${comparison(sessions)}
+${comparison(sessions, colour)}
 ${perAgent}
 ${tools}
 ${summaries}

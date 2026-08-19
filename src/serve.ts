@@ -52,6 +52,8 @@ export interface ServeOptions {
   state?: string
   /** Ignore any stored baseline and start watching from now. */
   fresh?: boolean
+  /** Hue encodes which vendor; lightness still encodes how much. Off by default. */
+  colour?: boolean
   /**
    * Where every source lives. Defaults to this machine's real installation.
    *
@@ -250,7 +252,7 @@ export function createLedgerServer(options: ServeOptions, now = Date.now()): Ser
           picked === '' ? undefined : picked,
           paused ? null : refreshSeconds, zoom, compress, source, range,
           capped === 0 ? undefined : { dropped: capped, limit: options.limit },
-          Object.values(sources), pulse,
+          Object.values(sources), pulse, options.colour === true,
         ))
         return
       }
@@ -269,7 +271,7 @@ export function createLedgerServer(options: ServeOptions, now = Date.now()): Ser
           res.writeHead(200, HTML).end(plain('这个会话是空的', '记录存在，但里面没有任何模型请求。'))
           return
         }
-        res.writeHead(200, HTML).end(renderSession(session, zoom, compress))
+        res.writeHead(200, HTML).end(renderSession(session, zoom, compress, options.colour === true))
         return
       }
 

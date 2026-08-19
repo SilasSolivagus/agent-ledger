@@ -17,6 +17,7 @@
  */
 
 import { esc, jitter } from './html.js'
+import type { Ladder } from './palette.js'
 
 /** Grey ladder, darkest first. Lightness is the encoding, not hue. */
 const LADDER = ['#1C1C1A', '#6A6963', '#8F8E88', '#B0AFA9', '#C6C5BF'] as const
@@ -41,9 +42,17 @@ function shadesByRank(values: readonly number[]): string[] {
 }
 
 /** L14 Hundred Field — one dot per percentage point, grouped by segment. */
-export function hundredField(segments: readonly { label: string; pct: number }[]): string {
+export function hundredField(
+  segments: readonly { label: string; pct: number }[],
+  ladders?: readonly Ladder[],
+): string {
   const W = 1000, COLS = 25, R = 3.6, SX = 38, SY = 16
-  const shades = shadesByRank(segments.map(s2 => s2.pct))
+  // Without ladders this is the grey ranking it always was. With them each
+  // segment gets its own hue and keeps its rank inside it — the chart never
+  // learns what the categories are, only that they differ.
+  const shades = ladders === undefined
+    ? shadesByRank(segments.map(s2 => s2.pct))
+    : segments.map((_, i) => (ladders[i] ?? [])[0] ?? '#1C1C1A')
   const parts: string[] = []
   let index = 0
   segments.forEach((seg, si) => {
@@ -71,13 +80,18 @@ export function hundredField(segments: readonly { label: string; pct: number }[]
 }
 
 /** F4 Tick Donut — a ring of ticks, one tick per percentage point. */
-export function tickDonut(segments: readonly { label: string; pct: number }[]): string {
+export function tickDonut(
+  segments: readonly { label: string; pct: number }[],
+  ladders?: readonly Ladder[],
+): string {
   const W = 560, cx = W / 2, cy = 116, R0 = 62
   const pol = (r: number, deg: number): [number, number] => {
     const a = (deg * Math.PI) / 180
     return [cx + r * Math.cos(a), cy + r * Math.sin(a)]
   }
-  const shades = shadesByRank(segments.map(s2 => s2.pct))
+  const shades = ladders === undefined
+    ? shadesByRank(segments.map(s2 => s2.pct))
+    : segments.map((_, k) => (ladders[k] ?? [])[0] ?? '#1C1C1A')
   const parts: string[] = []
   let idx = 0
   segments.forEach((seg, si) => {
