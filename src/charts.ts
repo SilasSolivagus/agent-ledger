@@ -35,8 +35,15 @@ const LADDER = ['#1C1C1A', '#6A6963', '#8F8E88', '#B0AFA9', '#C6C5BF'] as const
 function shadesByRank(values: readonly number[]): string[] {
   const order = values.map((v, i) => ({ v, i })).sort((a, b) => b.v - a.v)
   const out = values.map(() => LADDER[LADDER.length - 1] as string)
+  const last = LADDER.length - 1
   order.forEach((entry, rank) => {
-    out[entry.i] = LADDER[Math.min(rank, LADDER.length - 1)] as string
+    // Spread across the whole ladder rather than taking the top steps in
+    // sequence. Two categories used to get steps 0 and 1, which are one notch
+    // apart and read as the same dark once the dots are small; they now get
+    // the ends of the ladder.
+    const at = order.length <= 1 ? 0
+      : Math.round((rank / (order.length - 1)) * Math.min(last, order.length - 1))
+    out[entry.i] = LADDER[Math.min(at, last)] as string
   })
   return out
 }
@@ -63,7 +70,10 @@ export function hundredField(
       const cy = 24 + Math.floor(index / COLS) * SY
       parts.push(`<circle cx="${cx.toFixed(1)}" cy="${cy.toFixed(1)}" r="${R}" fill="${shade}"`
         + ` class="pop" style="animation-delay:${(index * 0.011).toFixed(3)}s"`
-        + ` opacity="${(0.72 + jitter(index + 1, si + 3) * 0.28).toFixed(2)}"/>`)
+        // Texture, not noise. The old range reached 0.72, which let a dark
+        // dot from one category render lighter than a pale dot from another —
+        // the jitter was overwriting the thing the chart exists to show.
+        + ` opacity="${(0.9 + jitter(index + 1, si + 3) * 0.1).toFixed(2)}"/>`)
     }
   })
   // Two legend columns: four labels on one line ran off the edge.

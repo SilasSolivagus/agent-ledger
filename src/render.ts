@@ -735,7 +735,7 @@ export function renderLive(
     ? `<div class="digesthead"><span class="who">${esc(agentLabel(active))}</span>
   <span class="dim">总览 · ${list.length} 个活跃会话 · ${windowNote(since, range)}</span></div>
 <div class="digest">${noRecords
-    ? renderSourceBoard(sourceDetails.filter(d => list.some(one => one.id === d.id)))
+    ? renderSourceBoard(sourceDetails.filter(d => list.some(one => one.id === d.id)), colour)
     : renderDigest(digest(active, list), colour)}</div>`
     : session === undefined
     ? emptyBoard(active, watching, looked, range)
@@ -1022,7 +1022,9 @@ ${failureCard(d)}`
  * @param details - one entry per live session, newest first.
  * @returns the panels for that source.
  */
-export function renderSourceBoard(details: readonly WorkbuddyDetail[]): string {
+export function renderSourceBoard(
+  details: readonly WorkbuddyDetail[], colour = false,
+): string {
   if (details.length === 0) return ''
   const n = (v: number): string => v.toLocaleString('en-US')
   const models = new Map<string, number>()
@@ -1037,11 +1039,13 @@ export function renderSourceBoard(details: readonly WorkbuddyDetail[]): string {
   }).join('')
 
   const occupancy = details.filter(d => d.size > 0)
+  const names = [...models.keys()]
   const field = occupancy.length === 0 ? '' : hundredField(
     [...models.entries()].map(([model, count]) => ({
       label: `${model} · ${count} 个会话`,
       pct: (count / details.length) * 100,
     })),
+    colour ? laddersFor(names, true) : undefined,
   )
 
   return `<div class="card wide">
