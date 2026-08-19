@@ -585,7 +585,7 @@ function crossVendor(
   if (comparable.length < 2) {
     const mute = [...kinds].filter(one => !comparable.includes(one))
     return `<div class="waiting">
-  <h1>还没有两家可比</h1>
+  <h1>暂无可比较的两个来源</h1>
   <p>这一栏把两个 agent 放在同一把尺子上量，量的都是「每一步」——一步几个工具、每步多少上下文。
      ${comparable.length === 0 ? '这个窗口里还没有一家' : `目前只有 ${
        comparable.map(a => esc(agentLabel(a))).join('、')} 一家`}报告了步。</p>
@@ -602,13 +602,13 @@ function crossVendor(
   const toolRows = totals.topTools.slice(0, 12).map(t => ({ label: t.name.toUpperCase(), value: t.calls }))
 
   const payload = agentRows.length === 0 ? '' : `<div class="card wide">
-  <h2>各 agent 开口前先背了多少</h2>
+  <h2>每次请求的固定负载</h2>
   <div class="sub">每次请求的固定负载均值 · 系统提示词 + 工具 schema</div>
   ${tickChart(agentRows, 'TOKEN')}
 </div>`
   const tools = toolRows.length === 0 ? '' : `<div class="card wide">
-  <h2>哪些工具真的跑了</h2>
-  <div class="sub">这个窗口里的调用次数</div>
+  <h2>工具调用次数</h2>
+  <div class="sub">本窗口内的调用次数</div>
   ${tickChart(toolRows, '次调用')}
 </div>`
 
@@ -641,7 +641,7 @@ function emptyBoard(
 ): string {
   if (watching.length === 0) {
     return `<div class="waiting">
-  <h1>这台机器上没找到 agent</h1>
+  <h1>未检测到 agent</h1>
   <p>未检测到任何来源的记录目录。安装 Claude Code、Codex 或 Cursor 其中之一，或等待 WorkBuddy 建立数据库后，重新运行本命令。</p>
   <p class="dimp">找过这些位置：<br/>${looked.map(one => esc(one)).join('<br/>')}</p>
 </div>`
@@ -929,8 +929,8 @@ export function renderDigest(d: Digest, colour = false): string {
     metered ? '' : 'token：这个来源不报告用量，输入、输出与缓存都无从得知',
   ].filter(v => v !== '')
   const gap = missing.length === 0 ? '' : `<div class="card wide">
-  <h2>这个来源没有的东西</h2>
-  <div class="sub">下面几项在别的 agent 看板上有，在这里没有 —— 不是零，是这个来源不记录</div>
+  <h2>该来源不记录的项目</h2>
+  <div class="sub">下列项目在其他 agent 看板上存在，此处没有 —— 不是零，是该来源不记录</div>
   <table class="mini"><tbody>${missing.map(line => {
     const [what, why] = line.split('：')
     return `<tr><td>${esc(what ?? '')}</td><td class="dim">${esc(why ?? '')}</td></tr>`
@@ -940,7 +940,7 @@ export function renderDigest(d: Digest, colour = false): string {
   // when it was first built: eight numbers a reader wants before any chart.
   const headline = `<div class="card wide">
   <h2>本窗口</h2>
-  <div class="sub">${d.sessions} 个会话 · 工具时间按区间并集计算，各会话直接相加为 ${span(d.toolOccupancyMs)}</div>
+  <div class="sub">${d.sessions} 个会话 · 工具时间按区间并集计算；各会话直接相加为 ${span(d.toolOccupancyMs)}</div>
   <div class="figs">
     ${fig(span(d.spanMs), '窗口时长')}
     ${fig(`${((d.toolMs / Math.max(1, d.spanMs)) * 100).toFixed(1)}%`, '其中工具执行')}
@@ -999,7 +999,7 @@ ${(() => {
     }
     return `<div class="card wide">
   <h2>产出归因</h2>
-  <div class="sub">这些输出 token 是谁产生的 · 按输出量排序</div>
+  <div class="sub">输出 token 的来源归属 · 按输出量排序</div>
   ${ring}
   ${part('模型', d.models, '占全部输出')}
   ${part('SKILL · 仅统计带归属的记录', d.skills, '占已标注 SKILL 的输出')}
@@ -1056,12 +1056,12 @@ ${field === '' ? '' : `<div class="card wide">
   ${field}
 </div>`}
 <div class="card wide">
-  <h2>这个来源没有的东西</h2>
-  <div class="sub">下面几项在别的 agent 看板上有，在这里没有 —— 不是零，是这个来源不记录</div>
+  <h2>该来源不记录的项目</h2>
+  <div class="sub">下列项目在其他 agent 看板上存在，此处没有 —— 不是零，是该来源不记录</div>
   <table class="mini"><tbody>
-    <tr><td>逐条轨迹</td><td class="dim">对话本体存在服务端，本机数据库只有会话级元数据</td></tr>
-    <tr><td>工具调用与实测耗时</td><td class="dim">无逐条记录，无从配对调用与返回</td></tr>
-    <tr><td>输入 / 输出 / 缓存 token</td><td class="dim">只有上下文占用总量，没有逐步用量拆分</td></tr>
+    <tr><td>逐条轨迹</td><td class="dim">对话内容存于服务端，本机数据库仅有会话级元数据</td></tr>
+    <tr><td>工具调用与实测耗时</td><td class="dim">无逐条记录，无法配对调用与返回</td></tr>
+    <tr><td>输入 / 输出 / 缓存 token</td><td class="dim">仅有上下文占用总量，无逐步用量拆分</td></tr>
     <tr><td>skill / 子代理归因</td><td class="dim">无此字段</td></tr>
   </tbody></table>
 </div>`
@@ -1529,7 +1529,7 @@ function comparison(sessions: readonly Session[], colour = false): string {
   if (rows.length < 2) return ''
 
   return `<div class="card wide">
-  <h2>两家各自长什么样</h2>
+  <h2>两者的工作方式对比</h2>
   <div class="sub">不是排名。会话记录不包含回答质量、任务是否完成、是否重新提问，因此「谁更强」缺少分子。下列指标只说明两者各自的工作方式与消耗。</div>
 </div>
 <div class="ledger">
@@ -1572,7 +1572,7 @@ export function renderSession(
 ${headlineCard([session], '本次会话')}
 <div class="card wide">
   <h2>轨迹</h2>
-  <div class="sub">点开任意一行看全文</div>
+  <div class="sub">点击任意一行查看全文</div>
 </div>
 <div class="ledger">${trajectoryTable(session, 600, true, false, zoom, compress)}</div>`
   return page(`会话 ${session.id.slice(0, 12)} — Agent Ledger`, body)
@@ -1605,15 +1605,15 @@ export function renderDashboard(
   const headline = headlineCard(sessions, `全部记录 · ${totals.sessions} 个会话`)
 
   const perAgent = agentRows.length === 0 ? '' : `<div class="card wide">
-  <h2>各 agent 开口前先背了多少</h2>
+  <h2>每次请求的固定负载</h2>
   <div class="sub">每次请求的固定负载均值 · 系统提示词 + 工具 schema</div>
   ${tickChart(agentRows, 'TOKEN')}
   <div class="src">固定负载 · 实测自真实请求</div>
 </div>`
 
   const tools = toolRows.length === 0 ? '' : `<div class="card wide">
-  <h2>哪些工具真的跑了</h2>
-  <div class="sub">所有已记录步骤的调用次数</div>
+  <h2>工具调用次数</h2>
+  <div class="sub">全部已记录步骤的调用次数</div>
   ${tickChart(toolRows, '次调用')}
   <div class="src">工具调用 · 取自会话记录</div>
 </div>`
@@ -1639,8 +1639,8 @@ export function renderDashboard(
 </div>
 <div class="ledger">${trajectoryTable(session, cap, details)}</div>`).join('\n')
 
-  return page('Agent Ledger — 你的 agent 到底做了什么', `<div class="lede">
-  <h1>你的 agent 到底做了什么</h1>
+  return page('Agent Ledger — agent 运行记录', `<div class="lede">
+  <h1>agent 运行记录</h1>
   <p>数据来自各 agent 写在本机的会话记录，每个数字对应一次真实请求。全程只读本地文件，不上传任何内容。</p>
   <div class="meta">${totals.sessions} 个会话 · ${totals.steps} 步 · 本地读取</div>
   <div class="meta"><a class="home" href="${HOME}" target="_blank" rel="noreferrer">本页由开源工具 runledger 生成 · GitHub ↗</a></div>

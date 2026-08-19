@@ -269,8 +269,8 @@ test('a source that keeps no transcript says what it cannot show', async () => {
 
   // The point of this board: absent is not zero. Rendering the usual panels
   // would claim this source measured zero tool time.
-  assert.match(html, /这个来源没有的东西/)
-  assert.match(html, /不是零，是这个来源不记录/)
+  assert.match(html, /该来源不记录的项目/)
+  assert.match(html, /不是零，是该来源不记录/)
   assert.match(html, /逐条轨迹/)
   assert.match(html, /工具调用与实测耗时/)
   assert.ok(!/一格 = .*秒/.test(html), 'and no duration chart is drawn at all')
@@ -399,7 +399,7 @@ test('a source without timestamps is trimmed by position, not by clock', async (
     const board = await get('/?agent=cursor')
     assert.match(board, /Anysphere · Cursor/, 'the vendor is named')
     // Every figure this source cannot record must say so rather than show 0.
-    assert.match(board, /这个来源没有的东西/)
+    assert.match(board, /该来源不记录的项目/)
     assert.match(board, /不为记录写入时间戳/)
     assert.match(board, /不报告用量/)
     assert.match(board, /按调用次数排序/, 'so the ranking falls back to counts')

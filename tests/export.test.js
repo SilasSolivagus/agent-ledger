@@ -80,7 +80,7 @@ test('two agents are two summaries, never one merged figure', () => {
 
 test('the cross-vendor comparison is in the file too, disclaimers and all', () => {
   const html = renderDashboard(two())
-  assert.match(html, /两家各自长什么样/)
+  assert.match(html, /两者的工作方式对比/)
   assert.match(html, /不是排名/)
   assert.match(html, /仅供参考，不作为结论/)
 })
@@ -88,7 +88,7 @@ test('the cross-vendor comparison is in the file too, disclaimers and all', () =
 test('one agent alone gets its summary but no comparison', () => {
   const html = renderDashboard(two().slice(0, 1))
   assert.match(html, /调用耗时分布/, 'the summary is not conditional on having two')
-  assert.ok(!/两家各自长什么样/.test(html), 'but a comparison of one is not a comparison')
+  assert.ok(!/两者的工作方式对比/.test(html), 'but a comparison of one is not a comparison')
 })
 
 test('catching up cost the export none of its promises', () => {
@@ -117,7 +117,7 @@ test('an unidentified source is not a third vendor in the comparison', () => {
     }],
   }]
   const html = renderDashboard(sessions)
-  const table = html.slice(html.indexOf('两家各自长什么样'), html.indexOf('各 agent 开口前'))
+  const table = html.slice(html.indexOf('两者的工作方式对比'), html.indexOf('每次请求的固定负载'))
   assert.ok(!/unknown/.test(table), 'it is kept out of the comparison')
   assert.match(html, /未能识别来源/, 'and the page says it was set aside rather than dropping it silently')
 })

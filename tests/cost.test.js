@@ -99,7 +99,7 @@ test('the summary states which price tier it used, and when the table was taken'
 test('a source that reports no tokens gets no spend card, not a zero one', () => {
   const html = renderDigest(digest('cursor', [tokenless()]))
   assert.ok(!/\$0\.00/.test(html), 'no zero total')
-  assert.match(html, /这个来源不记录|这个来源没有的东西/, 'it says the source does not record it')
+  assert.match(html, /该来源不记录|该来源不记录的项目/, 'it says the source does not record it')
 })
 
 test('the export carries the money too, and still reaches no network', () => {

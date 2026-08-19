@@ -209,7 +209,7 @@ test('a machine with no agent at all says so, and says where it looked', async (
   })
   try {
     const body = await (await fetch(`${base}/`)).text()
-    assert.match(body, /这台机器上没找到 agent/)
+    assert.match(body, /未检测到 agent/)
     assert.match(body, /no-claude/, 'the paths it searched are named, so this is diagnosable')
     assert.match(body, /no-workbuddy/)
     assert.ok(!/class="atab[ "]/.test(body), 'and there is no tab pretending a source exists')

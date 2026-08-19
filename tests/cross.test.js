@@ -77,7 +77,7 @@ test('two vendors on the board earn a tab that puts them on one scale', async ()
     assert.match(board, /跨厂商/)
 
     const cross = await get('/?agent=all')
-    assert.match(cross, /两家各自长什么样/, 'and it lands on the comparison')
+    assert.match(cross, /两者的工作方式对比/, 'and it lands on the comparison')
     assert.match(cross, /不是排名/, 'which still says out loud what it refuses to claim')
   } finally { stop() }
 })
@@ -93,7 +93,7 @@ test('asking for the comparison with only one vendor says what is missing', asyn
   // Reaching it by URL rather than by tab must not produce an empty panel.
   const { get, stop } = await watching({ both: false })
   try {
-    assert.match(await get('/?agent=all'), /还没有两家可比/)
+    assert.match(await get('/?agent=all'), /暂无可比较的两个来源/)
   } finally { stop() }
 })
 
@@ -101,7 +101,7 @@ test('the comparison inherits the window, so it can be asked about today', async
   const { get, stop } = await watching()
   try {
     const cross = await get('/?agent=all&range=all')
-    assert.match(cross, /两家各自长什么样/)
+    assert.match(cross, /两者的工作方式对比/)
     assert.match(cross, /class="ranges"[\s\S]*range=all[^>]*class="on"|class="on">全部/,
       'and the picker shows which window it is answering for')
   } finally { stop() }
@@ -149,7 +149,7 @@ test('a source that records no steps does not count as one of the two', async ()
     const board = await get('/?agent=claude-code')
     assert.ok(!/href="\?agent=all"/.test(board), 'no tab when only one source has steps')
     const cross = await get('/?agent=all')
-    assert.match(cross, /还没有两家可比/)
+    assert.match(cross, /暂无可比较的两个来源/)
     assert.match(cross, /报告了步/, 'and it names what the bar actually is')
   } finally { stop() }
 })
