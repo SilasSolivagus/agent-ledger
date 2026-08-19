@@ -142,3 +142,22 @@ test('a clock-billed model with no timestamp is refused, not rounded', () => {
   assert.equal(costOf(tokens, 'deepseek-v4-flash'), undefined)
   assert.equal(costOf(tokens, 'deepseek-v4-flash', 0), undefined)
 })
+
+test('a model this developer never ran is priced too', () => {
+  // The table was first cut to "models seen on this machine", which made the
+  // spend board blank for anyone on a different one. Someone still running
+  // sonnet-4-5 or gpt-4o is the common case, not an edge one.
+  for (const model of ['claude-sonnet-4-5', 'claude-opus-4-1', 'gpt-4o', 'gpt-4.1', 'o3-mini']) {
+    const cost = costOf({ input: 1000000, output: 0, cacheRead: 0, cacheWrite: 0 }, model)
+    assert.ok(cost !== undefined && cost.amount > 0, `${model} has no price`)
+  }
+})
+
+test("DeepSeek's two API names are modes, not models, so they are refused", () => {
+  // `deepseek-chat` is the non-thinking mode of whatever the current model is;
+  // Flash and Pro are priced 3x apart, so the name cannot say what it cost.
+  for (const alias of ['deepseek-chat', 'deepseek-reasoner']) {
+    assert.equal(costOf({ input: 1, output: 1, cacheRead: 0, cacheWrite: 0 }, alias), undefined)
+    assert.equal(priceNote(alias), '型号未标明')
+  }
+})

@@ -9,9 +9,12 @@
  * half of that bargain: it goes and looks at the upstream table, and says
  * what has moved since {@link PRICED_AT}. Nothing here updates itself.
  *
- * Only models this machine has actually produced are listed. A table of three
- * thousand entries would be mostly a list of models nobody here runs, and
- * every one of them is a number that can silently go wrong.
+ * Listed here is every model these four agents plausibly invoke, not merely
+ * the ones this developer's machine has run. That was the first cut and it was
+ * wrong the moment this shipped: anyone still on sonnet-4-5 would install it
+ * and read 「无此型号价格」 on every record, turning the headline feature into
+ * a blank card. Breadth is the guard's job now — `prices:check` verifies every
+ * USD rate against upstream, so a wider table is not a less checked one.
  *
  * Rates are per million tokens in the vendor's own currency, and the four
  * buckets line up exactly with {@link Usage}: fresh input, output, tokens
@@ -84,7 +87,7 @@ export interface Price {
  * Shown on the page, because a reader deserves to know how old a price is,
  * and compared by the guard script against the upstream list.
  */
-export const PRICED_AT = '2026-08-18'
+export const PRICED_AT = '2026-08-19'
 
 /**
  * Names that identify no particular model.
@@ -92,44 +95,116 @@ export const PRICED_AT = '2026-08-18'
  * `sonnet`, `opus` and `haiku` are aliases the harness resolves at request
  * time; what they meant depends on when the record was written, and there are
  * 1,221 of them on this machine. `<synthetic>` is not a request at all —
- * Claude Code writes it for messages it generated itself. Pricing either one
- * means inventing a figure, so both are refused by name rather than falling
+ * Claude Code writes it for messages it generated itself. Pricing any of these
+ * means inventing a figure, so they are refused by name rather than falling
  * through to "unknown model", which would misdescribe why.
  */
-const UNNAMED: ReadonlySet<string> = new Set(['sonnet', 'opus', 'haiku', '<synthetic>'])
+const UNNAMED: ReadonlySet<string> = new Set([
+  'sonnet', 'opus', 'haiku', '<synthetic>',
+  // DeepSeek's two API names are modes, not models: `deepseek-chat` is the
+  // non-thinking mode of whatever the current model is and `deepseek-reasoner`
+  // the thinking one. Flash and Pro are priced 3x apart, so the name does not
+  // say what a request cost — the same reason the Anthropic aliases are here.
+  'deepseek-chat', 'deepseek-reasoner',
+])
 
 /** Per million tokens, in each vendor's own currency. */
 export const PRICES: Readonly<Record<string, Price>> = {
-  // Anthropic bills cache writes; these are the standard rates, below the
-  // 200k-context threshold and at the five-minute cache lifetime.
-  'claude-opus-5': { currency: 'USD', input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 },
-  'claude-sonnet-5': { currency: 'USD', input: 2, output: 10, cacheRead: 0.2, cacheWrite: 2.5 },
+  'claude-3-7-sonnet-20250219': { currency: 'USD', input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 },
+  'claude-3-haiku-20240307': { currency: 'USD', input: 0.25, output: 1.25, cacheRead: 0.03, cacheWrite: 0.3 },
+  'claude-3-opus-20240229': { currency: 'USD', input: 15, output: 75, cacheRead: 1.5, cacheWrite: 18.75 },
+  'claude-4-opus-20250514': { currency: 'USD', input: 15, output: 75, cacheRead: 1.5, cacheWrite: 18.75 },
+  'claude-4-sonnet-20250514': { currency: 'USD', input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 },
   'claude-fable-5': { currency: 'USD', input: 10, output: 50, cacheRead: 1, cacheWrite: 12.5 },
-  'claude-opus-4-8': { currency: 'USD', input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 },
-  'claude-sonnet-4-6': { currency: 'USD', input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 },
   'claude-haiku-4-5': { currency: 'USD', input: 1, output: 5, cacheRead: 0.1, cacheWrite: 1.25 },
+  'claude-mythos-5': { currency: 'USD', input: 10, output: 50, cacheRead: 1, cacheWrite: 12.5 },
+  'claude-mythos-preview': { currency: 'USD', input: 10, output: 50, cacheRead: 1, cacheWrite: 12.5 },
+  'claude-opus-4-1': { currency: 'USD', input: 15, output: 75, cacheRead: 1.5, cacheWrite: 18.75 },
+  'claude-opus-4-20250514': { currency: 'USD', input: 15, output: 75, cacheRead: 1.5, cacheWrite: 18.75 },
+  'claude-opus-4-5': { currency: 'USD', input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 },
+  'claude-opus-4-6': { currency: 'USD', input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 },
+  'claude-opus-4-7': { currency: 'USD', input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 },
+  'claude-opus-4-8': { currency: 'USD', input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 },
+  'claude-opus-5': { currency: 'USD', input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 },
+  'claude-sonnet-4-20250514': { currency: 'USD', input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 },
+  'claude-sonnet-4-5': { currency: 'USD', input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 },
+  'claude-sonnet-4-6': { currency: 'USD', input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 },
+  'claude-sonnet-5': { currency: 'USD', input: 2, output: 10, cacheRead: 0.2, cacheWrite: 2.5 },
 
-  // OpenAI does not bill for cache writes, hence the zeroes.
-  'gpt-5.5': { currency: 'USD', input: 5, output: 30, cacheRead: 0.5, cacheWrite: 0 },
-  'gpt-5.4': { currency: 'USD', input: 2.5, output: 15, cacheRead: 0.25, cacheWrite: 0 },
-  'gpt-5.2': { currency: 'USD', input: 1.75, output: 14, cacheRead: 0.175, cacheWrite: 0 },
-  'gpt-5.1': { currency: 'USD', input: 1.25, output: 10, cacheRead: 0.125, cacheWrite: 0 },
+  'codex-mini-latest': { currency: 'USD', input: 1.5, output: 6, cacheRead: 0.375, cacheWrite: 0 },
+
+  'gpt-4.1': { currency: 'USD', input: 2, output: 8, cacheRead: 0.5, cacheWrite: 0 },
+  'gpt-4.1-2025-04-14': { currency: 'USD', input: 2, output: 8, cacheRead: 0.5, cacheWrite: 0 },
+  'gpt-4.1-mini': { currency: 'USD', input: 0.4, output: 1.6, cacheRead: 0.1, cacheWrite: 0 },
+  'gpt-4.1-mini-2025-04-14': { currency: 'USD', input: 0.4, output: 1.6, cacheRead: 0.1, cacheWrite: 0 },
+  'gpt-4.1-nano': { currency: 'USD', input: 0.1, output: 0.4, cacheRead: 0.025, cacheWrite: 0 },
+  'gpt-4.1-nano-2025-04-14': { currency: 'USD', input: 0.1, output: 0.4, cacheRead: 0.025, cacheWrite: 0 },
+  'gpt-4o': { currency: 'USD', input: 2.5, output: 10, cacheRead: 1.25, cacheWrite: 0 },
+  'gpt-4o-2024-05-13': { currency: 'USD', input: 5, output: 15, cacheRead: 0, cacheWrite: 0 },
+  'gpt-4o-2024-08-06': { currency: 'USD', input: 2.5, output: 10, cacheRead: 1.25, cacheWrite: 0 },
+  'gpt-4o-2024-11-20': { currency: 'USD', input: 2.5, output: 10, cacheRead: 1.25, cacheWrite: 0 },
+  'gpt-4o-mini': { currency: 'USD', input: 0.15, output: 0.6, cacheRead: 0.075, cacheWrite: 0 },
+  'gpt-4o-mini-2024-07-18': { currency: 'USD', input: 0.15, output: 0.6, cacheRead: 0.075, cacheWrite: 0 },
   'gpt-5': { currency: 'USD', input: 1.25, output: 10, cacheRead: 0.125, cacheWrite: 0 },
+  'gpt-5-2025-08-07': { currency: 'USD', input: 1.25, output: 10, cacheRead: 0.125, cacheWrite: 0 },
+  'gpt-5-chat': { currency: 'USD', input: 1.25, output: 10, cacheRead: 0.125, cacheWrite: 0 },
+  'gpt-5-chat-latest': { currency: 'USD', input: 1.25, output: 10, cacheRead: 0.125, cacheWrite: 0 },
   'gpt-5-codex': { currency: 'USD', input: 1.25, output: 10, cacheRead: 0.125, cacheWrite: 0 },
+  'gpt-5-mini': { currency: 'USD', input: 0.25, output: 2, cacheRead: 0.025, cacheWrite: 0 },
+  'gpt-5-mini-2025-08-07': { currency: 'USD', input: 0.25, output: 2, cacheRead: 0.025, cacheWrite: 0 },
+  'gpt-5-nano': { currency: 'USD', input: 0.05, output: 0.4, cacheRead: 0.005, cacheWrite: 0 },
+  'gpt-5-nano-2025-08-07': { currency: 'USD', input: 0.05, output: 0.4, cacheRead: 0.005, cacheWrite: 0 },
+  'gpt-5-pro': { currency: 'USD', input: 15, output: 120, cacheRead: 0, cacheWrite: 0 },
+  'gpt-5-pro-2025-10-06': { currency: 'USD', input: 15, output: 120, cacheRead: 0, cacheWrite: 0 },
+  'gpt-5.1': { currency: 'USD', input: 1.25, output: 10, cacheRead: 0.125, cacheWrite: 0 },
+  'gpt-5.1-2025-11-13': { currency: 'USD', input: 1.25, output: 10, cacheRead: 0.125, cacheWrite: 0 },
+  'gpt-5.1-chat-latest': { currency: 'USD', input: 1.25, output: 10, cacheRead: 0.125, cacheWrite: 0 },
   'gpt-5.1-codex': { currency: 'USD', input: 1.25, output: 10, cacheRead: 0.125, cacheWrite: 0 },
   'gpt-5.1-codex-max': { currency: 'USD', input: 1.25, output: 10, cacheRead: 0.125, cacheWrite: 0 },
   'gpt-5.1-codex-mini': { currency: 'USD', input: 0.25, output: 2, cacheRead: 0.025, cacheWrite: 0 },
-  'codex-mini-latest': { currency: 'USD', input: 1.5, output: 6, cacheRead: 0.375, cacheWrite: 0 },
-  'o3': { currency: 'USD', input: 2, output: 8, cacheRead: 0.5, cacheWrite: 0 },
+  'gpt-5.2': { currency: 'USD', input: 1.75, output: 14, cacheRead: 0.175, cacheWrite: 0 },
+  'gpt-5.2-2025-12-11': { currency: 'USD', input: 1.75, output: 14, cacheRead: 0.175, cacheWrite: 0 },
+  'gpt-5.2-chat-latest': { currency: 'USD', input: 1.75, output: 14, cacheRead: 0.175, cacheWrite: 0 },
+  'gpt-5.2-codex': { currency: 'USD', input: 1.75, output: 14, cacheRead: 0.175, cacheWrite: 0 },
+  'gpt-5.2-pro': { currency: 'USD', input: 21, output: 168, cacheRead: 0, cacheWrite: 0 },
+  'gpt-5.2-pro-2025-12-11': { currency: 'USD', input: 21, output: 168, cacheRead: 0, cacheWrite: 0 },
+  'gpt-5.3-chat-latest': { currency: 'USD', input: 1.75, output: 14, cacheRead: 0.175, cacheWrite: 0 },
+  'gpt-5.3-codex': { currency: 'USD', input: 1.75, output: 14, cacheRead: 0.175, cacheWrite: 0 },
+  'gpt-5.4': { currency: 'USD', input: 2.5, output: 15, cacheRead: 0.25, cacheWrite: 0 },
+  'gpt-5.4-2026-03-05': { currency: 'USD', input: 2.5, output: 15, cacheRead: 0.25, cacheWrite: 0 },
+  'gpt-5.4-mini': { currency: 'USD', input: 0.75, output: 4.5, cacheRead: 0.075, cacheWrite: 0 },
+  'gpt-5.4-mini-2026-03-17': { currency: 'USD', input: 0.75, output: 4.5, cacheRead: 0.075, cacheWrite: 0 },
+  'gpt-5.4-nano': { currency: 'USD', input: 0.2, output: 1.25, cacheRead: 0.02, cacheWrite: 0 },
+  'gpt-5.4-nano-2026-03-17': { currency: 'USD', input: 0.2, output: 1.25, cacheRead: 0.02, cacheWrite: 0 },
+  'gpt-5.4-pro': { currency: 'USD', input: 30, output: 180, cacheRead: 3, cacheWrite: 0 },
+  'gpt-5.4-pro-2026-03-05': { currency: 'USD', input: 30, output: 180, cacheRead: 3, cacheWrite: 0 },
+  'gpt-5.5': { currency: 'USD', input: 5, output: 30, cacheRead: 0.5, cacheWrite: 0 },
+  'gpt-5.5-2026-04-23': { currency: 'USD', input: 5, output: 30, cacheRead: 0.5, cacheWrite: 0 },
+  'gpt-5.5-pro': { currency: 'USD', input: 30, output: 180, cacheRead: 3, cacheWrite: 0 },
+  'gpt-5.5-pro-2026-04-23': { currency: 'USD', input: 30, output: 180, cacheRead: 3, cacheWrite: 0 },
+  'gpt-5.6': { currency: 'USD', input: 5, output: 30, cacheRead: 0.5, cacheWrite: 6.25 },
+  'gpt-5.6-luna': { currency: 'USD', input: 0.2, output: 1.2, cacheRead: 0.02, cacheWrite: 0.25 },
+  'gpt-5.6-sol': { currency: 'USD', input: 5, output: 30, cacheRead: 0.5, cacheWrite: 6.25 },
+  'gpt-5.6-terra': { currency: 'USD', input: 2, output: 12, cacheRead: 0.2, cacheWrite: 2.5 },
 
-  // DeepSeek, from its own price list rather than the community table's
+  'o1': { currency: 'USD', input: 15, output: 60, cacheRead: 7.5, cacheWrite: 0 },
+  'o1-2024-12-17': { currency: 'USD', input: 15, output: 60, cacheRead: 7.5, cacheWrite: 0 },
+  'o1-pro': { currency: 'USD', input: 150, output: 600, cacheRead: 0, cacheWrite: 0 },
+  'o1-pro-2025-03-19': { currency: 'USD', input: 150, output: 600, cacheRead: 0, cacheWrite: 0 },
+  'o3': { currency: 'USD', input: 2, output: 8, cacheRead: 0.5, cacheWrite: 0 },
+  'o3-2025-04-16': { currency: 'USD', input: 2, output: 8, cacheRead: 0.5, cacheWrite: 0 },
+  'o3-mini': { currency: 'USD', input: 1.1, output: 4.4, cacheRead: 0.55, cacheWrite: 0 },
+  'o3-mini-2025-01-31': { currency: 'USD', input: 1.1, output: 4.4, cacheRead: 0.55, cacheWrite: 0 },
+  'o3-pro': { currency: 'USD', input: 20, output: 80, cacheRead: 0, cacheWrite: 0 },
+  'o3-pro-2025-06-10': { currency: 'USD', input: 20, output: 80, cacheRead: 0, cacheWrite: 0 },
+  'o4-mini': { currency: 'USD', input: 1.1, output: 4.4, cacheRead: 0.275, cacheWrite: 0 },
+  'o4-mini-2025-04-16': { currency: 'USD', input: 1.1, output: 4.4, cacheRead: 0.275, cacheWrite: 0 },
+
+  // DeepSeek from its own price list rather than the community table's
   // conversion of it. Two lists exist — 元 on the Chinese page, USD on the
-  // English one — and they are separately rounded rather than one converted
-  // into the other: 1.5元/$0.22 implies 6.82, 0.05元/$0.007 implies 7.14. The
-  // 元 list is the one used here; an account billed in USD would need the
-  // other, which is a switch nobody has asked for yet.
-  //
-  // Rates below are the peak ones. DeepSeek bills no cache write.
+  // English one — separately rounded rather than one converted into the
+  // other: 1.5元/$0.22 implies 6.82, 0.05元/$0.007 implies 7.14. The 元 list
+  // is the one used here. Peak rates; DeepSeek bills no cache write.
   'deepseek-v4-flash': {
     currency: 'CNY', input: 3, output: 9, cacheRead: 0.1, cacheWrite: 0,
     peakHoursUtc: [[1, 4], [6, 10]],
