@@ -13,6 +13,16 @@ import { createLedgerServer } from '../lib/serve.js'
 import { listTranscripts } from '../lib/transcript.js'
 import { noSources } from '../lib/transcript.js'
 
+/**
+ * Anything the browser would go and fetch to render the page.
+ *
+ * An `<a href>` is not one of them: nothing is retrieved until someone
+ * clicks, so a link to the project leaves the offline promise intact. The
+ * earlier form of this check caught both and would have failed the moment a
+ * page named where it came from.
+ */
+const REMOTE = /(<img|<script|<link|@import|url\()[^>]*https?:|src\s*=\s*["']https?:/i
+
 /** A Claude-shaped transcript: one turn, one step, one tool call with a result. */
 function transcript(said) {
   return [
@@ -72,7 +82,7 @@ test('the board with the window open lists every session and links to it', async
     assert.equal(status, 200)
     assert.match(body, /\?agent=claude-code&amp;s=session-abc123/, 'the session must be openable')
     assert.match(body, /proj-alpha/, 'where it ran is part of finding it again')
-    assert.ok(!/(src|href)\s*=\s*["']https?:/i.test(body), 'no remote assets')
+    assert.ok(!REMOTE.test(body), 'no remote assets')
   } finally { stop() }
 })
 

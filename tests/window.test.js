@@ -264,7 +264,7 @@ test('each window says which stretch of time it covers, and they differ', async 
   try {
     const label = async r => {
       const body = await get(`/?agent=claude-code${r === '' ? '' : `&range=${r}`}`)
-      return /class="sidefoot">([^<]*)/.exec(body)?.[1] ?? ''
+      return /class="wnote">([^<]*)/.exec(body)?.[1] ?? ''
     }
     const week = await label('week')
     const month = await label('month')
@@ -281,8 +281,58 @@ test('a window that opened today needs no date, only a clock', async () => {
   const today = await board({ startedAt: Date.now() })
   try {
     const body = await today.get('/?agent=claude-code')
-    const foot = /class="sidefoot">([^<]*)/.exec(body)?.[1] ?? ''
+    const foot = /class="wnote">([^<]*)/.exec(body)?.[1] ?? ''
     assert.match(foot, /自 \d\d:\d\d:\d\d 起/, 'a date would be noise inside today')
     assert.ok(!/月 \d+ 日/.test(foot))
   } finally { today.stop() }
+})
+
+test('the board asks a cheap question before it asks an expensive one', async () => {
+  // Redrawing costs the browser a parse of the whole document and a rebuild
+  // of every chart in it. Doing that every few seconds when nothing moved is
+  // what made a tab left open go unresponsive, so the page carries the
+  // fingerprint it was built with and the refresh compares before it fetches.
+  const { get, stop, claude } = await board()
+  try {
+    const body = await get('/')
+    const stamped = /data-pulse="([^"]+)"/.exec(body)?.[1]
+    assert.ok(stamped, 'the page states what it was built from')
+
+    const pulse = await get('/pulse')
+    assert.equal(pulse, stamped, 'and the endpoint agrees with it')
+    assert.ok(pulse.length < 80, `a pulse is cheap to fetch, was ${pulse.length} bytes`)
+
+    await writeFile(join(claude, 'session-new.jsonl'), claudeTurn('NEW-WORK', 3), 'utf8')
+    assert.notEqual(await get('/pulse'), pulse, 'a new transcript moves it')
+  } finally { stop() }
+})
+
+test('a session that merely grows moves the pulse too', async () => {
+  // A resumed session appends to a file that already existed. A fingerprint
+  // built from names alone would never notice the conversation continuing.
+  const { get, stop, claude } = await board()
+  try {
+    const before = await get('/pulse')
+    await writeFile(join(claude, 'session-before.jsonl'),
+      claudeTurn('OLD-WORK', 0) + claudeTurn('CARRIED-ON', 4), 'utf8')
+    assert.notEqual(await get('/pulse'), before)
+  } finally { stop() }
+})
+
+test('the refresh loop cannot overlap itself, and lets go of what it replaced', async () => {
+  // Both faults were in the same eight lines. setInterval fired again whether
+  // or not the previous cycle had finished, so a slow one piled up behind the
+  // next; and the observer kept every card that innerHTML had detached,
+  // because unobserve only ran for cards that had been scrolled into view.
+  const { get, stop } = await board()
+  try {
+    const body = await get('/')
+    const script = /<script>([\s\S]*?)<\/script>/.exec(body)?.[1] ?? ''
+    assert.ok(script, 'the board carries its script')
+    assert.ok(!/setInterval/.test(script), 'a tick schedules the next one only when it is done')
+    assert.match(script, /busy/, 'and refuses to start while one is running')
+    assert.match(script, /io\.disconnect\(\)/, 'the observer lets go before the swap')
+    assert.ok(!/innerHTML===/.test(script.replace(/\s/g, '')),
+      'and nothing serialises half a megabyte just to decide whether to redraw')
+  } finally { stop() }
 })

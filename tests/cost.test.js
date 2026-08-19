@@ -15,6 +15,16 @@ import { renderDashboard, renderDigest, renderSession } from '../lib/render.js'
 import { digest } from '../lib/digest.js'
 import { PRICED_AT } from '../lib/price.js'
 
+/**
+ * Anything the browser would go and fetch to render the page.
+ *
+ * An `<a href>` is not one of them: nothing is retrieved until someone
+ * clicks, so a link to the project leaves the offline promise intact. The
+ * earlier form of this check caught both and would have failed the moment a
+ * page named where it came from.
+ */
+const REMOTE = /(<img|<script|<link|@import|url\()[^>]*https?:|src\s*=\s*["']https?:/i
+
 /** One priced record and one that cannot be priced, in the same session. */
 function mixed() {
   return {
@@ -96,5 +106,27 @@ test('the export carries the money too, and still reaches no network', () => {
   const html = renderDashboard([mixed()])
   assert.match(html, /\$0\.18/)
   assert.ok(!/<script/i.test(html), 'no script')
-  assert.ok(!/(src|href)\s*=\s*["']https?:/i.test(html), 'no remote assets')
+  assert.ok(!REMOTE.test(html), 'no remote assets')
+})
+
+test('the total a vendor would show is on the page, beside the split it bills by', () => {
+  // Every usage page reports one number: input + output + cache, all added.
+  // This board reported 「输入 TOKEN」, the fresh slice alone, which on a
+  // cache-heavy machine is two percent of it — so a reader comparing the two
+  // concluded the board was broken. Both figures now appear, each named.
+  const html = renderDigest(digest('claude-code', [mixed()]))
+  const headline = html.slice(0, html.indexOf('调用耗时分布'))
+  // 1,000 fresh + 500 out + 200,000 cache read + 10,000 cache write
+  assert.match(headline, /211,500/, 'the gross total is stated')
+  assert.match(headline, /总量 token/)
+  assert.match(html, /总量 = 新鲜输入 \+ 输出 \+ 缓存读 \+ 缓存写/, 'and what it adds is spelled out')
+})
+
+test('the split stays, because the four are billed at different rates', () => {
+  // Gross is for comparing against a bill; the split is what the bill is made
+  // of. A cache read costs a tenth of fresh input — adding them to compute
+  // money would be wrong by an order of magnitude.
+  const html = renderDigest(digest('claude-code', [mixed()]))
+  assert.match(html, /其中输出/)
+  assert.match(html, /缓存读/)
 })

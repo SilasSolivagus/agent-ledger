@@ -15,6 +15,16 @@ import { test } from 'node:test'
 
 import { renderDashboard } from '../lib/render.js'
 
+/**
+ * Anything the browser would go and fetch to render the page.
+ *
+ * An `<a href>` is not one of them: nothing is retrieved until someone
+ * clicks, so a link to the project leaves the offline promise intact. The
+ * earlier form of this check caught both and would have failed the moment a
+ * page named where it came from.
+ */
+const REMOTE = /(<img|<script|<link|@import|url\()[^>]*https?:|src\s*=\s*["']https?:/i
+
 /** One Claude session and one Codex session, both with real figures. */
 function two() {
   const step = (agent, i) => ({
@@ -84,7 +94,7 @@ test('one agent alone gets its summary but no comparison', () => {
 test('catching up cost the export none of its promises', () => {
   const html = renderDashboard(two())
   assert.ok(!/<script/i.test(html), 'no script')
-  assert.ok(!/(src|href)\s*=\s*["']https?:/i.test(html), 'no remote assets')
+  assert.ok(!REMOTE.test(html), 'no remote assets')
   assert.ok(!/<details>/.test(html), 'and still no expandable originals unless asked')
 })
 
@@ -110,4 +120,13 @@ test('an unidentified source is not a third vendor in the comparison', () => {
   const table = html.slice(html.indexOf('两家各自长什么样'), html.indexOf('各 agent 开口前'))
   assert.ok(!/unknown/.test(table), 'it is kept out of the comparison')
   assert.match(html, /未能识别来源/, 'and the page says it was set aside rather than dropping it silently')
+})
+
+test('the file that travels says what made it, and nothing about whose machine', () => {
+  // An export gets mailed. Whoever opens it has no way to find the tool
+  // otherwise — and a link to the project leaks nothing, unlike a link to
+  // anything on the machine that produced it.
+  const html = renderDashboard(two())
+  assert.match(html, /github\.com\/SilasSolivagus\/agent-ledger/)
+  assert.ok(!/\/Users\//.test(html), 'and still no local paths ride along')
 })

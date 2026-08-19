@@ -17,6 +17,15 @@ import { profiles, type AgentProfile } from './profile.js'
 import { T, esc, jitter, ms, money, moneyAll, span } from './html.js'
 import { costOf, priceNote, spendOf, PRICED_AT } from './price.js'
 import { RANGES } from './live.js'
+
+/**
+ * Where this came from, for the page that travels.
+ *
+ * An exported file gets mailed, and whoever opens it has no way to find out
+ * what made it. One line at the foot costs nothing and leaks nothing — it
+ * names the tool, not the machine, and the promise above it stays true.
+ */
+const HOME = 'https://github.com/SilasSolivagus/agent-ledger'
 import { hairlineArea, hundredField, jitterStrip, tickDonut } from './charts.js'
 
 
@@ -533,6 +542,21 @@ function windowNote(since: number, range: string, now = Date.now()): string {
 }
 
 /**
+ * Every token the request moved, the way a vendor's own counter reports it.
+ *
+ * The four buckets are kept apart everywhere else because they are billed
+ * apart — a cache read costs a tenth of fresh input, so a spend figure that
+ * added them would be wrong by an order of magnitude. But nobody's usage page
+ * splits them, and a reader comparing this board against their bill was
+ * handed 「输入 TOKEN」 — the fresh slice alone, which on a cache-heavy
+ * machine is two percent of the truth. So the sum gets its own figure, named
+ * for what it is.
+ */
+function grossTokens(t: { input: number; output: number; cacheRead: number; cacheWrite: number }): number {
+  return t.input + t.output + t.cacheRead + t.cacheWrite
+}
+
+/**
  * The one view the per-vendor board cannot give you.
  *
  * Every other tab answers "what is this agent doing". This one answers "how do
@@ -717,9 +741,9 @@ ${statusBar(session)}`
   <nav class="atabs">${tabs}</nav>
   ${windows}
   <div class="entries">${entries}</div>
-  <div class="sidefoot">${capped === undefined ? '' : `另有 ${capped.dropped} 个会话没读进来（每来源上限 ${capped.limit}，用 --limit 调）<br/>`}${windowNote(since, range)} · ${refreshSeconds === null ? `<b>已暂停</b> · <a href="?agent=${encodeURIComponent(active)}${keepRange}">继续自刷</a>` : `每 ${refreshSeconds} 秒自刷 · <a href="?agent=${encodeURIComponent(active)}${keepRange}&amp;live=off">暂停</a>`} · 只读本地文件</div>
+  <div class="sidefoot">${capped === undefined ? '' : `另有 ${capped.dropped} 个会话没读进来（每来源上限 ${capped.limit}，用 --limit 调）<br/>`}<a class="home" href="${HOME}" target="_blank" rel="noreferrer">runledger on GitHub ↗</a><br/><span class="wnote">${windowNote(since, range)}</span> · ${refreshSeconds === null ? `<b>已暂停</b> · <a href="?agent=${encodeURIComponent(active)}${keepRange}">继续自刷</a>` : `每 ${refreshSeconds} 秒自刷 · <a href="?agent=${encodeURIComponent(active)}${keepRange}&amp;live=off">暂停</a>`} · 只读本地文件</div>
 </aside>
-<main class="main">${main}</main>`, refreshSeconds ?? undefined, 'app', true)
+<main class="main">${main}</main>`, refreshSeconds ?? undefined, 'app', true, pulse)
 }
 
 /** A ranked breakdown: proportion above, exact figures below. */
@@ -911,7 +935,8 @@ export function renderDigest(d: Digest): string {
     ${fig(n(d.turns), '轮次')}
     ${fig(n(d.steps), '步数')}
     ${fig(n(d.calls), '工具调用')}
-    ${fig(n(d.output), '输出 token')}
+    ${fig(n(grossTokens(d)), '总量 token')}
+    ${fig(n(d.output), '其中输出')}
     ${fig(`${(d.cacheHitRate * 100).toFixed(0)}%`, '缓存命中')}
     ${fig(n(d.errors), '调用失败')}
     ${// Money leads this row rather than waiting six cards down. It was in the
@@ -919,6 +944,7 @@ export function renderDigest(d: Digest): string {
       // "where is the money" — which is the answer to "did I bury it".
       d.spend.priced === 0 ? fig('—', '花费') : fig(moneyAll(d.spend.totals), '花费')}
   </div>
+  <div class="src">总量 = 新鲜输入 + 输出 + 缓存读 + 缓存写，与厂商用量页同口径 —— 缓存读通常吃掉绝大部分，所以它比「新鲜输入」大一两个数量级是正常的</div>
 </div>`
   return `${headline}
 ${gap}
@@ -1252,6 +1278,9 @@ body:has(.app){padding:0}
    Lightness carries importance; there is no colour anywhere. */
 /* A section break inside the single-file export, so a reader scrolling a
    megabyte can tell whose figures they are looking at. */
+.home{color:#6b6a63;text-decoration:none;border-bottom:1px solid #cfccc2}
+.home:hover{color:#1c1c1a}
+.sidefoot .home{display:inline-block;margin-bottom:3px}
 .sub-lede{margin:46px 0 18px;padding-top:22px;border-top:1px solid #dcd9cf}
 .sub-lede h2{font-size:22px;font-weight:700;margin:0}
 .digest{display:grid;grid-template-columns:1fr 1fr;gap:14px;align-items:start}
@@ -1420,8 +1449,9 @@ function headlineCard(sessions: readonly Session[], scope: string): string {
         ? fig('—', '首 token 中位数')
         : fig(`${String(totals.medianTtftMs)}ms`, '首 token 中位数')}
     ${fig(`${(totals.spanMs / 60000).toFixed(1)}m`, '会话跨度')}
-    ${fig(totals.input.toLocaleString('en-US'), '输入 token')}
-    ${fig(totals.output.toLocaleString('en-US'), '输出 token')}
+    ${fig(grossTokens(totals).toLocaleString('en-US'), '总量 token')}
+    ${fig(totals.input.toLocaleString('en-US'), '其中新鲜输入')}
+    ${fig(totals.output.toLocaleString('en-US'), '其中输出')}
     ${fig(String(totals.steps), '步数')}
     ${fig(String(totals.toolCalls), '工具调用')}
     ${spend.priced === 0 ? fig('—', '花费') : fig(moneyAll(spend.totals), '花费')}
@@ -1579,7 +1609,8 @@ export function renderDashboard(sessions: readonly Session[], cap = 200, details
   <h1>你的 agent 到底做了什么</h1>
   <p>数据来自 Claude Code 与 Codex 自己写在本机的会话记录。每一个数字都对应一次真实请求：
      开口前先背了什么、回来了什么、花了多久、动用了哪些工具。全程只读本地文件，不上传任何内容。</p>
-  <div class="meta">${totals.sessions} 个会话 · ${totals.steps} 步 · 本地读取</div>
+  <div class="meta">${totals.sessions} 个会话 · ${totals.steps} 步 · 本地读取 ·
+    <a class="home" href="${HOME}" target="_blank" rel="noreferrer">runledger ↗</a></div>
 </div>
 ${headline}
 ${comparison(sessions)}

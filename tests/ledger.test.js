@@ -12,6 +12,16 @@ import { parseStep, sseEvents, estimateTokens } from '../lib/parse.js'
 import { summarise, median, averageStatic } from '../lib/summary.js'
 import { renderDashboard, chooseUnit } from '../lib/render.js'
 
+/**
+ * Anything the browser would go and fetch to render the page.
+ *
+ * An `<a href>` is not one of them: nothing is retrieved until someone
+ * clicks, so a link to the project leaves the offline promise intact. The
+ * earlier form of this check caught both and would have failed the moment a
+ * page named where it came from.
+ */
+const REMOTE = /(<img|<script|<link|@import|url\()[^>]*https?:|src\s*=\s*["']https?:/i
+
 /** A stand-in upstream that streams a known Anthropic-shaped response. */
 function fakeUpstream(body, { status = 200, headers = {} } = {}) {
   const server = createServer((req, res) => {
@@ -239,7 +249,7 @@ const ONE_SESSION = {
 test('the dashboard is self-contained', () => {
   const html = renderDashboard([ONE_SESSION])
   assert.ok(!/<script/i.test(html), 'no script')
-  assert.ok(!/(src|href)\s*=\s*["']https?:/i.test(html), 'no remote assets')
+  assert.ok(!REMOTE.test(html), 'no remote assets')
   assert.match(html, /48,571|45,678/)
   assert.match(html, /250 ms/, 'the log carries each row own time')
   assert.match(html, /class="op real"/, 'and the overview strip marks the measured ones')
