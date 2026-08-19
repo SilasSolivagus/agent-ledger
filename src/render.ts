@@ -1241,6 +1241,10 @@ body:has(.app){padding:0}
 .main{padding:20px 26px 40px;min-width:0}
 /* lieflat-charts: light cards by default, at most one dark card per screen.
    Lightness carries importance; there is no colour anywhere. */
+/* A section break inside the single-file export, so a reader scrolling a
+   megabyte can tell whose figures they are looking at. */
+.sub-lede{margin:46px 0 18px;padding-top:22px;border-top:1px solid #dcd9cf}
+.sub-lede h2{font-size:22px;font-weight:700;margin:0}
 .digest{display:grid;grid-template-columns:1fr 1fr;gap:14px;align-items:start}
 .digest .card{background:#f4f3ee;color:${T.paperInk};border-radius:24px;padding:18px 22px 14px}
 .digest .card h2{font-size:15px;font-weight:700;color:${T.paperInk}}
@@ -1442,7 +1446,14 @@ const num = (v: number): string => v.toLocaleString('en-US')
  * not drawn on the page rather than left to the reader.
  */
 function comparison(sessions: readonly Session[]): string {
-  const rows = profiles(sessions)
+  // `unknown` is what the proxy records when it could not tell who was
+  // calling. It is not a product, and a row for it sits beside two real
+  // vendors reading as a third one that did nothing — every behavioural
+  // figure is zero, because those come from events and a proxied step has
+  // none. Set aside rather than dropped: the count is named below the table.
+  const all = profiles(sessions)
+  const rows = all.filter(one => one.agent !== 'unknown')
+  const setAside = all.length - rows.length
   if (rows.length < 2) return ''
 
   return `<div class="card wide">
@@ -1469,6 +1480,7 @@ function comparison(sessions: readonly Session[]): string {
     { head: '每轮墙钟', of: p => `${num(p.spanPerTurn)}s` },
     { head: '轮数', of: p => num(p.turns) },
   ])}
+  ${setAside === 0 ? '' : `<div class="src">另有 ${String(setAside)} 个<b>未能识别来源</b>的记录没进这张表 —— 那是代理没认出调用方，不是一个厂商，它的行为指标全为零只因为代理记录里没有逐条事件</div>`}
   <div class="src">花了多少 · 这几个数几乎全由「你拿它干什么」决定 —— 两家做的活不一样，
     差异就不是它们的差异。只看，别当结论</div>
 </div>`
@@ -1532,6 +1544,17 @@ export function renderDashboard(sessions: readonly Session[], cap = 200, details
   <div class="src">工具调用 · 取自会话记录</div>
 </div>`
 
+  // One summary per agent, never one merged one. Adding a Claude duration to
+  // a Codex duration produces a figure describing neither, which is why the
+  // board is organised per vendor; a file that flattened them would be
+  // answering a different question than the page it came from.
+  const summaries = [...agents.entries()]
+    .sort((a, b) => b[1].length - a[1].length)
+    .map(([agent, list]) => `<div class="lede sub-lede"><h2>${esc(agentLabel(agent))}</h2>
+  <p>${list.length} 个会话 · 下面每个数字只来自这一家</p></div>
+<div class="digest">${renderDigest(digest(agent, list))}</div>`)
+    .join('\n')
+
   // Newest first, across agents. Read order is the one thing a single file can
   // offer instead of navigation, so the session you just finished is on top.
   const ordered = [...sessions].sort((a, b) => b.startedAt - a.startedAt)
@@ -1549,7 +1572,11 @@ export function renderDashboard(sessions: readonly Session[], cap = 200, details
   <div class="meta">${totals.sessions} 个会话 · ${totals.steps} 步 · 本地读取</div>
 </div>
 ${headline}
+${comparison(sessions)}
 ${perAgent}
 ${tools}
+${summaries}
+<div class="lede sub-lede"><h1>逐条轨迹</h1>
+  <p>每个会话一段，按最后活动时间倒序。</p></div>
 ${traces}`)
 }
