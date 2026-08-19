@@ -52,7 +52,7 @@ test('a window sums every file in it, however many that is', async () => {
   const claude = await machine(10)
   const files = await listTranscripts(Infinity, { ...noSources(claude), claude })
   assert.equal(files.length, 10)
-  const tally = { files: new Map(), pending: 0 }
+  const tally = { files: new Map(), pending: 0, total: 0, startedAt: Date.now() }
   await fillTally(tally, files, undefined)
   const all = totalsSince(tally, 0)
   assert.equal(all.steps, 10, 'every file counted, not the newest few')
@@ -64,7 +64,7 @@ test('a window sums every file in it, however many that is', async () => {
 test('a narrower window takes only the days inside it', async () => {
   const claude = await machine(10)
   const files = await listTranscripts(Infinity, { ...noSources(claude), claude })
-  const tally = { files: new Map(), pending: 0 }
+  const tally = { files: new Map(), pending: 0, total: 0, startedAt: Date.now() }
   await fillTally(tally, files, undefined)
   const week = totalsSince(tally, Date.now() - 6 * DAY)
   assert.equal(week.steps, 7, 'seven calendar days, seven files')
@@ -77,11 +77,11 @@ test('counting survives a restart, and an unchanged file is not read twice', asy
   const path = join(dir, 'tally.json')
   const files = await listTranscripts(Infinity, { ...noSources(claude), claude })
 
-  const first = { files: new Map(), pending: 0 }
+  const first = { files: new Map(), pending: 0, total: 0, startedAt: Date.now() }
   await fillTally(first, files, path)
   assert.ok(existsSync(path))
 
-  const second = { files: await readTally(path), pending: 0 }
+  const second = { files: await readTally(path), pending: 0, total: 0, startedAt: Date.now() }
   assert.equal(second.files.size, 4, 'the cache came back')
   await fillTally(second, files, path)
   assert.equal(second.pending, 0, 'nothing was stale, so nothing was re-read')
@@ -91,7 +91,7 @@ test('counting survives a restart, and an unchanged file is not read twice', asy
 test('a rewritten file is counted again, and a deleted one stops counting', async () => {
   const claude = await machine(3)
   const files = await listTranscripts(Infinity, { ...noSources(claude), claude })
-  const tally = { files: new Map(), pending: 0 }
+  const tally = { files: new Map(), pending: 0, total: 0, startedAt: Date.now() }
   await fillTally(tally, files, undefined)
   const before = totalsSince(tally, 0).gross
 
@@ -105,7 +105,7 @@ test('a rewritten file is counted again, and a deleted one stops counting', asyn
 test('an unfinished count says so rather than passing for a total', async () => {
   // A page that showed a filling number as final would be the silent
   // truncation this replaces, wearing a different hat.
-  const tally = { files: new Map(), pending: 7 }
+  const tally = { files: new Map(), pending: 7, total: 10, startedAt: Date.now() - 3000 }
   assert.equal(totalsSince(tally, 0).pending, 7)
 })
 

@@ -29,7 +29,7 @@ import {
   baselineFrom, boardsOf, movedSince, sinceBaseline, windowFrom, RANGES, type Baseline,
 } from './live.js'
 import { readBaseline, writeBaseline } from './baseline.js'
-import { fillTally, readTally, totalsSince, type Tally } from './tally.js'
+import { cardsSince, fillTally, progressOf, readTally, totalsSince, type Tally } from './tally.js'
 import { readWorkbuddySessions, workbuddyTouchedAt, type WorkbuddyDetail } from './workbuddy.js'
 import { redactSession } from './redact.js'
 import type { Session } from './types.js'
@@ -141,7 +141,7 @@ export function createLedgerServer(options: ServeOptions, now = Date.now()): Ser
   // that needs them: parsing this machine's transcripts takes about half a
   // minute. The count is filled behind the server instead, resumed from disk,
   // and the page says how much is still outstanding.
-  const tally: Tally = { files: new Map(), pending: 0 }
+  const tally: Tally = { files: new Map(), pending: 0, total: 0, startedAt: now }
   const counted: Promise<void> = (async (): Promise<void> => {
     tally.files = await readTally(options.tally)
     if (options.tally === undefined) return
@@ -275,12 +275,19 @@ export function createLedgerServer(options: ServeOptions, now = Date.now()): Ser
         void counted
         const totals = range === 'watch' ? undefined
           : totalsSince(tally, since, chosen === 'all' ? undefined : chosen)
+        // The list is no longer capped either: the rows were written down when
+        // each file was counted, so listing them all costs nothing beyond the
+        // markup. Switching tabs mid-count neither restarts the work nor
+        // discards it — the fill belongs to the server, not to a request.
+        const cards = range === 'watch' ? undefined
+          : cardsSince(tally, since, chosen === 'all' ? undefined : chosen)
+        const progress = progressOf(tally)
         res.writeHead(200, HTML).end(renderLive(
           boards, watching, since, chosen,
           picked === '' ? undefined : picked,
           paused ? null : refreshSeconds, zoom, compress, source, range,
           capped === 0 ? undefined : { dropped: capped, limit: options.limit },
-          Object.values(sources), pulse, options.colour === true, totals,
+          Object.values(sources), pulse, options.colour === true, totals, cards, progress,
         ))
         return
       }

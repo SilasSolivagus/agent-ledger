@@ -45,6 +45,23 @@ export interface Bucket {
   unpriced: number
 }
 
+/**
+ * What the sidebar needs to list a session, without reading its file again.
+ *
+ * The count already parses every transcript, so the list can be complete for
+ * free — it was capped only because the parse was the expensive part, and
+ * that bill is now paid once in the background rather than per request.
+ */
+export interface SessionCard {
+  id: string
+  agent: string
+  cwd?: string
+  startedAt: number
+  turns: number
+  steps: number
+  tools: number
+}
+
 /** One transcript's contribution, and the identity that says it is still valid. */
 export interface FileTally {
   path: string
@@ -53,13 +70,45 @@ export interface FileTally {
   agent: string
   /** Local `YYYY-MM-DD` to that day's totals. */
   days: Record<string, Bucket>
+  /** Enough to draw this session's row in the list. */
+  card?: SessionCard
 }
 
-/** Everything counted so far, plus how much is left. */
+/**
+ * Everything counted so far, plus enough to say how long the rest will take.
+ *
+ * Waiting is fine; not knowing how long is not. A bare "统计中" leaves the
+ * reader guessing whether it is five seconds or five minutes, so the count
+ * publishes what it is working through and how fast it is going, and the page
+ * turns that into a number of seconds. Then waiting is a choice.
+ */
 export interface Tally {
   files: Map<string, FileTally>
   /** Files not yet counted. Zero means the totals are complete. */
   pending: number
+  /** Files this run set out to read, for "42 / 1906". */
+  total: number
+  /** When this run started, so a rate can be measured rather than assumed. */
+  startedAt: number
+}
+
+/**
+ * How far along the count is, in the terms a waiting reader needs.
+ * @param tally - the live count.
+ * @param now - the current instant.
+ * @returns undefined once there is nothing left to do.
+ */
+export function progressOf(tally: Tally, now = Date.now()): {
+  done: number; total: number; secondsLeft: number
+} | undefined {
+  if (tally.pending <= 0 || tally.total <= 0) return undefined
+  const done = tally.total - tally.pending
+  const elapsed = Math.max(1, now - tally.startedAt)
+  // Measured, not assumed. File sizes vary by two orders of magnitude here, so
+  // a rate taken from this run is the only one worth quoting.
+  const perMs = done > 0 ? done / elapsed : 0
+  const secondsLeft = perMs > 0 ? Math.ceil(tally.pending / perMs / 1000) : 0
+  return { done, total: tally.total, secondsLeft }
 }
 
 /** The sum over a window, and what it could not price. */
@@ -127,7 +176,42 @@ export function tallyOf(file: TranscriptFile, session: Session): FileTally {
       else b.usd += m.amount
     }
   }
-  return { path: file.path, mtimeMs: file.mtimeMs, size: file.size, agent: file.agent, days }
+  const events = session.events ?? []
+  const card: SessionCard = {
+    id: session.id,
+    agent: session.agent,
+    startedAt: session.startedAt,
+    turns: Math.max(0, ...events.map(e => e.turn), 0),
+    steps: session.steps.length,
+    tools: events.filter(e => e.kind === 'tool').length,
+  }
+  if (session.cwd !== undefined) card.cwd = session.cwd
+  return { path: file.path, mtimeMs: file.mtimeMs, size: file.size, agent: file.agent, days, card }
+}
+
+/**
+ * Every session counted so far, newest first.
+ *
+ * No cap. The list used to take the newest `--limit` per source because
+ * building it meant parsing, and parsing everything cost half a minute on a
+ * request. It costs nothing here — the rows were written down when the file
+ * was counted — so the only honest length is all of them.
+ * @param tally - the cache.
+ * @param since - window start; sessions older than that calendar day are out.
+ * @param agent - one source, or undefined for all.
+ */
+export function cardsSince(
+  tally: Tally, since: number, agent?: string,
+): SessionCard[] {
+  const from = since <= 0 ? 0 : new Date(dayOf(since)).getTime()
+  const out: SessionCard[] = []
+  for (const file of tally.files.values()) {
+    if (agent !== undefined && file.agent !== agent) continue
+    const card = file.card
+    if (card === undefined || card.startedAt < from) continue
+    out.push(card)
+  }
+  return out.sort((a, b) => b.startedAt - a.startedAt)
 }
 
 /**
@@ -212,12 +296,15 @@ export async function fillTally(
   files: readonly TranscriptFile[],
   path: string | undefined,
   onProgress?: () => void,
+  now = Date.now(),
 ): Promise<void> {
   const stale = files.filter(file => {
     const had = tally.files.get(file.path)
     return had === undefined || had.mtimeMs !== file.mtimeMs || had.size !== file.size
   })
   tally.pending = stale.length
+  tally.total = stale.length
+  tally.startedAt = now
   let done = 0
   for (const file of stale) {
     try {

@@ -193,7 +193,9 @@ test('a board that dropped sessions to stay small says so', async () => {
   })
   try {
     const body = await (await fetch(`${base}/?agent=claude-code&range=all`)).text()
-    assert.match(body, /另有 2 个会话没读进来/, 'the two it skipped are counted out loud')
+    // The cap applies to the list only; the totals cover the window. The
+    // notice has to say which, or a reader takes the figures as truncated.
+    assert.match(body, /另有 2 个未列出，但已计入总量/, 'the two it skipped are counted out loud')
     assert.match(body, /--limit/, 'and the reader is told which knob changes it')
   } finally { server.close(); server.closeAllConnections() }
 })

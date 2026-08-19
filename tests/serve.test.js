@@ -193,7 +193,7 @@ test('a quiet agent keeps its own board when a busy one floods the machine', asy
       (busy.body.match(/&amp;s=session-/g) ?? []).length, 2,
       'the busy one is capped at the per-agent limit, not unbounded',
     )
-    assert.match(busy.body, /另有 1 个会话没读进来/, 'and the cap is not silent')
+    assert.match(busy.body, /另有 1 个未列出，但已计入总量/, 'and the cap is not silent')
   } finally { server.close(); server.closeAllConnections() }
 })
 

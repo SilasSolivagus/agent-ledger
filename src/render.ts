@@ -18,7 +18,7 @@ import { T, esc, jitter, ms, money, moneyAll, span } from './html.js'
 import { costOf, priceNote, spendOf, PRICED_AT } from './price.js'
 import { RANGES } from './live.js'
 import { laddersFor, hueFor, MONO } from './palette.js'
-import type { Totals as WindowTotals } from './tally.js'
+import type { SessionCard, Totals as WindowTotals } from './tally.js'
 
 /**
  * Where this came from, for the page that travels.
@@ -488,6 +488,24 @@ function statusBar(session: Session): string {
 </div>`
 }
 
+/**
+ * A sidebar row drawn from the count rather than from a parsed session.
+ *
+ * Same shape as {@link sideEntry}; the difference is only where the numbers
+ * came from. The count already read every file, so the list can be complete
+ * without any of them being read again.
+ */
+function cardEntry(c: SessionCard, agent: string, active: boolean, range = 'watch'): string {
+  const where = c.cwd === undefined ? '' : c.cwd.split('/').pop() ?? ''
+  return `<a class="entry${active ? ' on' : ''}"
+  href="?agent=${encodeURIComponent(agent)}&amp;s=${encodeURIComponent(c.id)}${
+    range === 'watch' ? '' : `&amp;range=${range}`}">
+  <span class="etop"><span class="ewhere">${esc(where || c.id.slice(0, 12))}</span>
+  <span class="ewhen">${clock(c.startedAt)}</span></span>
+  <span class="emeta">第 ${c.turns} 轮 · ${c.steps} 步 · ${c.tools} 次工具</span>
+</a>`
+}
+
 /** One row in the sidebar's session list. */
 function sideEntry(session: Session, agent: string, active: boolean, range = 'watch'): string {
   const events = session.events ?? []
@@ -616,7 +634,7 @@ function crossVendor(
 
   return `<div class="digesthead"><span class="who">跨厂商对比</span>
   <span class="dim">${[...kinds].map(a => esc(agentLabel(a))).join(' · ')} · ${windowNote(since, range)}</span></div>
-<div class="digest">${headlineCard(sessions, `${sessions.length} 个会话 · ${[...kinds].length} 家`)}
+<div class="digest">${headlineCard(sessions, `${sessions.length} 个会话 · ${[...kinds].length} 家`, window)}
 ${comparison(sessions, colour)}
 ${payload}
 ${tools}</div>`
@@ -681,6 +699,10 @@ export function renderLive(
    * what the window actually came to.
    */
   totals?: WindowTotals,
+  /** Every session in the window, from the count. No cap. */
+  cards?: readonly SessionCard[],
+  /** How far the count has got, when it is still going. */
+  progress?: { done: number; total: number; secondsLeft: number },
 ): string {
   const agents = [...boards.keys()]
   // Every link on this page has to carry the window, or clicking a vendor
@@ -733,10 +755,13 @@ export function renderLive(
     href="?agent=${encodeURIComponent(active)}${keepRange}"><span class="etop">
     <span class="ewhere">总览</span></span>
     <span class="emeta">${list.length} 个会话加起来</span></a>`
-    + (list.length === 0
-      ? '<div class="empty side-empty">这个 agent 还没有新活动</div>'
-      : list.map(one => sideEntry(one, active === 'all' ? one.agent : active,
-        one.id === session?.id, range)).join(''))
+    + (cards !== undefined && cards.length > 0
+      ? cards.map(c => cardEntry(c, active === 'all' ? c.agent : active,
+        c.id === session?.id, range)).join('')
+      : list.length === 0
+        ? '<div class="empty side-empty">这个 agent 还没有新活动</div>'
+        : list.map(one => sideEntry(one, active === 'all' ? one.agent : active,
+          one.id === session?.id, range)).join(''))
 
   const noRecords = list.length > 0 && list.every(one => one.steps.length === 0 && (one.events ?? []).length === 0)
   const main = active === 'all' && session === undefined
@@ -762,7 +787,10 @@ ${statusBar(session)}`
   <a class="home" href="${HOME}" target="_blank" rel="noreferrer">
     <span class="hlabel">开源项目 · runledger</span>
     <span class="hgo">GitHub ↗</span></a>
-  <div class="sidefoot">${capped === undefined ? '' : `另有 ${capped.dropped} 个会话没读进来（每来源上限 ${capped.limit}，用 --limit 调）<br/>`}<span class="wnote">${windowNote(since, range)}</span> · ${refreshSeconds === null ? `<b>已暂停</b> · <a href="?agent=${encodeURIComponent(active)}${keepRange}">继续自刷</a>` : `每 ${refreshSeconds} 秒自刷 · <a href="?agent=${encodeURIComponent(active)}${keepRange}&amp;live=off">暂停</a>`} · 只读本地文件</div>
+  ${progress === undefined ? '' : `<div class="counting">正在统计 ${
+    progress.done} / ${progress.total} 个记录 · 约剩 ${
+    progress.secondsLeft} 秒<br/><span class="dim">统计在后台进行，随时可以切换或关闭；已算的部分不会丢</span></div>`}
+  <div class="sidefoot">${capped === undefined ? '' : `列表只显示每来源最近 ${capped.limit} 个 · 另有 ${capped.dropped} 个未列出，但已计入总量<br/>`}<span class="wnote">${windowNote(since, range)}</span> · ${refreshSeconds === null ? `<b>已暂停</b> · <a href="?agent=${encodeURIComponent(active)}${keepRange}">继续自刷</a>` : `每 ${refreshSeconds} 秒自刷 · <a href="?agent=${encodeURIComponent(active)}${keepRange}&amp;live=off">暂停</a>`} · 只读本地文件</div>
 </aside>
 <main class="main">${main}</main>`, refreshSeconds ?? undefined, 'app', true, pulse)
 }
@@ -1300,6 +1328,9 @@ body:has(.app){padding:0}
 /* Chips wrap as a group rather than stretch to equal widths: with five
    windows in a 235px column, equal widths broke 「本次监视」across two lines
    mid-word. Each chip keeps its own width and the row wraps instead. */
+.counting{margin:0 10px 8px;padding:9px 12px;border:1px solid #dcd9cf;border-radius:10px;
+ background:#f2f0e9;font-size:10.5px;line-height:1.55;color:#4a4944}
+.counting .dim{color:#8f8e88}
 .vdot{display:inline-block;width:8px;height:8px;border-radius:99px;margin-right:7px;vertical-align:1px}
 .ranges{display:flex;flex-wrap:wrap;gap:3px;padding:7px 8px;border-bottom:1px solid #dcd9cf}
 .ranges a{flex:0 1 auto;white-space:nowrap;text-align:center;padding:4px 7px;
@@ -1467,7 +1498,9 @@ function sessionSub(session: Session): string {
 }
 
 /** The headline card: what everything on this page cost, in eight numbers. */
-function headlineCard(sessions: readonly Session[], scope: string): string {
+function headlineCard(
+  sessions: readonly Session[], scope: string, window?: WindowTotals,
+): string {
   const totals = summarise(sessions)
   const stat = averageStatic(sessions)
   const spend = spendOf(sessions.flatMap(one => one.events ?? []))
@@ -1491,12 +1524,15 @@ function headlineCard(sessions: readonly Session[], scope: string): string {
       totals.medianTtftMs === 0
         ? fig('—', '首 token 中位数')
         : fig(`${String(totals.medianTtftMs)}ms`, '首 token 中位数')}
-    ${fig(`${(totals.spanMs / 60000).toFixed(1)}m`, '会话跨度')}
-    ${fig(grossTokens(totals).toLocaleString('en-US'), '总量 token')}
-    ${fig(totals.input.toLocaleString('en-US'), '其中新鲜输入')}
-    ${fig(totals.output.toLocaleString('en-US'), '其中输出')}
-    ${fig(String(totals.steps), '步数')}
-    ${fig(String(totals.toolCalls), '工具调用')}
+    ${fig(span(totals.spanMs), '会话跨度')}
+    ${window === undefined
+      ? fig(grossTokens(totals).toLocaleString('en-US'), '总量 token')
+      : fig(window.gross.toLocaleString('en-US'),
+        window.pending > 0 ? `总量 token · 统计中 ${String(window.pending)}` : '总量 token · 全窗口')}
+    ${fig((window?.input ?? totals.input).toLocaleString('en-US'), '其中新鲜输入')}
+    ${fig((window?.output ?? totals.output).toLocaleString('en-US'), '其中输出')}
+    ${fig(totals.steps.toLocaleString('en-US'), '步数')}
+    ${fig(totals.toolCalls.toLocaleString('en-US'), '工具调用')}
     ${spend.priced === 0 ? fig('—', '花费') : fig(moneyAll(spend.totals), '花费')}
   </div>
   <div class="src">RECORDED LOCALLY · NOTHING UPLOADED${

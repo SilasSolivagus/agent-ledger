@@ -317,7 +317,14 @@ export function spendOf(events: readonly LedgerEvent[]): Spend {
   for (const event of events) {
     if (event.usage === undefined) continue
     const cost = costOf(event.usage, event.model, event.at)
-    if (cost === undefined) { unpriced += 1; unnamed.add(event.model ?? '未标明'); continue }
+    // An empty string is a name the transcript failed to write, not a model
+    // called "". Left as-is it rendered as 「型号未标明：」 with nothing after
+    // the colon, which reads like a bug rather than like missing data.
+    if (cost === undefined) {
+      unpriced += 1
+      unnamed.add(event.model === undefined || event.model === '' ? '未标明' : event.model)
+      continue
+    }
     byCurrency.set(cost.currency, (byCurrency.get(cost.currency) ?? 0) + cost.amount)
     priced += 1
   }
