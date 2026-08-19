@@ -405,26 +405,33 @@ D.addEventListener('click',function(ev){
   if(!card||reduce||(t.closest&&t.closest('a,summary')))return;
   card.classList.remove('in');void card.offsetWidth;card.classList.add('in')
 });
-var every=Number(D.body.dataset.refresh||0),timer=0;
+var every=Number(D.body.dataset.refresh||0),pulse=D.body.dataset.pulse||'',timer=0,busy=0;
 function swap(fresh,sel){
   var a=D.querySelector(sel),b=fresh.querySelector(sel);
-  if(!a||!b||a.innerHTML===b.innerHTML)return;
-  a.innerHTML=b.innerHTML;arm(a)
+  if(!a||!b)return;
+  a.innerHTML=b.innerHTML
 }
+function plan(){if(every>0)timer=setTimeout(tick,every*1000)}
 function tick(){
-  fetch(location.href,{cache:'no-store'}).then(function(r){return r.text()}).then(function(t){
-    var fresh=new DOMParser().parseFromString(t,'text/html');
-    swap(fresh,'.entries');swap(fresh,'.atabs');swap(fresh,'main.main')
-  }).catch(function(){})
+  if(busy)return;
+  busy=1;
+  fetch('/pulse',{cache:'no-store'}).then(function(r){return r.text()}).then(function(v){
+    if(v===pulse)return;
+    pulse=v;
+    return fetch(location.href,{cache:'no-store'}).then(function(r){return r.text()}).then(function(t){
+      var fresh=new DOMParser().parseFromString(t,'text/html');
+      if(io)io.disconnect();
+      swap(fresh,'.entries');swap(fresh,'.atabs');swap(fresh,'main.main');
+      arm(D)
+    })
+  }).catch(function(){}).then(function(){busy=0;plan()})
 }
-if(every>0){
-  timer=setInterval(tick,every*1000);
-  addEventListener('pagehide',function(){clearInterval(timer)});
-  D.addEventListener('visibilitychange',function(){
-    if(D.hidden){clearInterval(timer);timer=0}
-    else if(!timer){timer=setInterval(tick,every*1000);tick()}
-  })
-}
+plan();
+addEventListener('pagehide',function(){clearTimeout(timer);timer=0});
+D.addEventListener('visibilitychange',function(){
+  if(D.hidden){clearTimeout(timer);timer=0}
+  else if(!timer){tick()}
+})
 })()`
 
 /** `14:32:07`, in the reader's own clock. */
@@ -634,6 +641,8 @@ export function renderLive(
   capped?: { dropped: number; limit: number },
   /** Every path this machine was searched at, for the found-nothing case. */
   looked: readonly string[] = [],
+  /** Fingerprint of what is on disk, so a refresh can ask before it fetches. */
+  pulse = '',
 ): string {
   const agents = [...boards.keys()]
   // Every link on this page has to carry the window, or clicking a vendor
@@ -1345,7 +1354,7 @@ function fig(n: string, k: string): string {
  */
 function page(
   title: string, body: string,
-  refreshSeconds?: number, shell = 'wrap', script = false,
+  refreshSeconds?: number, shell = 'wrap', script = false, pulse = '',
 ): string {
   // Without script the meta refresh is the only way the board updates, so it
   // lives in <noscript>; with script the page swaps in place instead.
@@ -1359,7 +1368,8 @@ function page(
 ${fallback}<title>${esc(title)}</title>
 <style>${STYLE}</style>
 </head>
-<body${refreshSeconds === undefined ? '' : ` data-refresh="${String(refreshSeconds)}"`}>
+<body${refreshSeconds === undefined ? '' : ` data-refresh="${String(refreshSeconds)}"`}${
+  pulse === '' ? '' : ` data-pulse="${esc(pulse)}"`}>
 <div class="${shell}">
 ${body}
 </div>

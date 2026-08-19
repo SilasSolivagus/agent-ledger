@@ -73,6 +73,29 @@ interface Cached { mtimeMs: number; session?: Session }
 
 const HTML = { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' } as const
 
+/**
+ * A short string that changes exactly when the board would look different.
+ *
+ * Count, newest write and total bytes cover both ways a source moves: a new
+ * transcript appears, or one already open grows. WorkBuddy keeps a database
+ * rather than files, so its own last-activity stamp joins them.
+ * @param files - the current scan.
+ * @param sources - where everything lives.
+ * @returns a value to compare against the one the page was built with.
+ */
+async function fingerprint(
+  files: readonly TranscriptFile[], sources: Sources,
+): Promise<string> {
+  let newest = 0
+  let bytes = 0
+  for (const file of files) {
+    if (file.mtimeMs > newest) newest = file.mtimeMs
+    bytes += file.size
+  }
+  const wb = await workbuddyTouchedAt(sources.workbuddy)
+  return `${String(files.length)}-${String(Math.round(newest))}-${String(bytes)}-${String(wb)}`
+}
+
 /** A page for the two things that can go wrong, in the same voice as the rest. */
 function plain(title: string, detail: string): string {
   return `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"/>`
@@ -144,10 +167,23 @@ export function createLedgerServer(options: ServeOptions, now = Date.now()): Ser
 
       if (path === '/favicon.ico') { res.writeHead(204).end(); return }
 
+      // The board asks this before it asks for a page. Redrawing costs the
+      // browser a parse of the whole document and a rebuild of every chart in
+      // it; doing that every few seconds when nothing moved is what made a
+      // tab left open go unresponsive. Twenty bytes answers "has anything
+      // changed", and the expensive fetch only happens when the answer is yes.
+      if (path === '/pulse') {
+        const files = await listTranscripts(Infinity, sources)
+        res.writeHead(200, { 'content-type': 'text/plain; charset=utf-8', 'cache-control': 'no-store' })
+          .end(await fingerprint(files, sources))
+        return
+      }
+
       // Every route needs the file list and nothing else needs a scan, so this
       // is the one place the disk is walked. Stat over a thousand files is
       // milliseconds; it is the reads that are expensive.
       const files = await listTranscripts(Infinity, sources)
+      const pulse = await fingerprint(files, sources)
 
       if (path === '/') {
         const baseline = await ready
@@ -214,7 +250,7 @@ export function createLedgerServer(options: ServeOptions, now = Date.now()): Ser
           picked === '' ? undefined : picked,
           paused ? null : refreshSeconds, zoom, compress, source, range,
           capped === 0 ? undefined : { dropped: capped, limit: options.limit },
-          Object.values(sources),
+          Object.values(sources), pulse,
         ))
         return
       }
