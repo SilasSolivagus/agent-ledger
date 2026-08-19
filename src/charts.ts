@@ -3,25 +3,20 @@
  *
  * Kept apart from the page so that a chart knows nothing about a session, a
  * digest or a cost — it is handed labels and numbers and returns SVG. That
- * boundary is what makes the gallery rules below checkable in one place
- * instead of drifting as callers multiply.
+ * boundary is what makes these rules checkable in one place instead of
+ * drifting as callers multiply.
  *
+ * Every chart keeps a countable unit and prints it. The rest, from the
+ * galleries: light cards by default with at most one dark card per screen,
+ * hairlines at 0.5–0.7px, jittered rung length and opacity from a
+ * deterministic pseudo-random so a reload looks identical, a marker every
+ * fifth unit, and no colour — lightness carries importance.
+ *
+ * @see the lieflat-charts galleries — Lupi Editorial (L1–L15), Lupi Basics (F1–F12)
  * @module
  */
 
 import { esc, jitter } from './html.js'
-
-/**
- * The chart family, lifted from the lieflat-charts galleries.
- *
- * Every one keeps a countable unit and prints it. The rules that shape them,
- * from that repo's SKILL.md: light cards by default with at most one dark card
- * per screen, hairlines at 0.5–0.7px, jittered rung length and opacity from a
- * deterministic pseudo-random so a reload looks identical, a marker every
- * fifth unit, and no colour — lightness carries importance.
- *
- * @see /Users/silas/项目探索/lieflat-charts/templates
- */
 
 /** Grey ladder, darkest first. Lightness is the encoding, not hue. */
 const LADDER = ['#1C1C1A', '#6A6963', '#8F8E88', '#B0AFA9', '#C6C5BF'] as const
