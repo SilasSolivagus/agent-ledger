@@ -147,7 +147,7 @@ Claude Code 和 Codex 都有。你说的话有黑色标记，工具调用有土�
 ## 开发
 
 ```sh
-pnpm install && pnpm run check          # 构建 + 115 个测试
+pnpm install && pnpm run check          # 构建 + 120 个测试
 node scripts/demo-fixture.mjs /tmp/demo # 造一台假机器的记录
 HOME=/tmp/demo node bin/agent-ledger.js serve --fresh
 ```

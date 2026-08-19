@@ -1,6 +1,6 @@
 {
   "name": "runledger",
-  "version": "0.2.2",
+  "version": "0.3.0",
   "description": "See what your coding agent actually did — session trajectory and cost dashboard for Claude Code, Codex, and any agent that talks HTTP",
   "keywords": [
     "claude-code",
@@ -9,7 +9,8 @@
     "observability",
     "tokens",
     "trajectory",
-    "runledger"
+    "runledger",
+    "cost"
   ],
   "type": "module",
   "main": "lib/index.js",
