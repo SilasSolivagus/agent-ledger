@@ -6,19 +6,23 @@ Claude Code 和 Codex 都会把每次会话完整写在你本机上，但都没�
 
 **全程只读本地文件，不上传任何内容。**
 
+![实时看板](https://raw.githubusercontent.com/SilasSolivagus/agent-ledger/main/docs/board.png)
+
+*左边一列是你装了的 agent，各有一块自己的板子；窗口从「本次监视」一直拉到「全部」。截图里的会话、命令和金额都是造的（`node scripts/demo-fixture.mjs <dir>` 生成，没数据也能试跑），页面本身没有任何一处是拼出来的。*
+
 ## 用
 
 ```sh
 npx runledger serve
 ```
 
-浏览器自己会打开，然后你就可以不管它了。
+一条命令，不用装，不用配置，不用 API key。浏览器自己会打开，然后你就可以不管它了。
+
+> 包名是 **runledger**，装完之后命令行是 **`agent-ledger`**（`agent-ledger` 这个包名被一个同赛道的包占了）。`npx runledger` 两个名字都对得上；如果你 `npm i -g runledger`，之后敲的是 `agent-ledger`。
 
 **它是监视器，不是历史浏览器。** 基线落在你按回车那一刻，之前的东西默认不显示——所以第一屏是空的，那是对的。你回去照常干活，轨迹每 5 秒自己冒出来。想往回看就点侧栏的窗口：`今天` `近 7 天` `近 30 天` `全部`。基线会落盘，关掉再开接着看，`--fresh` 重新划线。
 
-npm 上叫 **runledger**（`agent-ledger` 被一个同赛道的包挡住了），装完之后命令行是 `agent-ledger`。
-
-不需要配置，不需要 API key，不需要改你 agent 的任何设置。它读的是这两个目录：
+它读的是这几个位置：
 
 | 来源 | 位置 | 能给出什么 |
 |---|---|---|
@@ -57,13 +61,21 @@ agent-ledger report --redact --out safe.html # 导出一份可以给别人看的
 
 **每次会话的轨迹**——一根发丝线是一步，圆点大小是这一步的耗时，方块是工具调用。一眼能看出工作集中在哪一段，不用读任何数字。
 
-**逐条事件账本**——你说了什么、模型做了什么、调了哪个工具、拿到什么结果，按轮次分段。Claude Code 和 Codex 都有。你说的话有黑色标记，工具调用有土黄标记，模型的思考退到灰色——**几百行里眼睛知道往哪落**。
+**逐条事件账本**——你说了什么、模型做了什么、调了哪个工具、拿到什么结果，按轮次分段。
+
+![逐条账本](https://raw.githubusercontent.com/SilasSolivagus/agent-ledger/main/docs/ledger.png)
+
+*一行一次操作。右边三列是这一条自己的耗时、输出 token、花了多少钱。顶上那条时间轴的块可以点，跳到对应行。*
+
+Claude Code 和 Codex 都有。你说的话有黑色标记，工具调用有土黄标记，模型的思考退到灰色——**几百行里眼睛知道往哪落**。
 
 **每一条请求花了多少钱**——按该型号的四档单价（新鲜输入 / 输出 / 缓存读 / 缓存写）实算。行上、会话上、汇总上各一份。算不出来的会说明原因（型号只写了别名、或价目表里没有这一款），**绝不显示 ¥0**。价目表内置、不联网，`npm run prices:check` 负责发现上游变了。
 
 **两家各自长什么样**——最上面那个「跨厂商」tab，把两家放在同一把尺子上量，而且跟着你选的时间窗走。**它不是排名**，原因写在下一节。
 
 生成的页面**完全自包含**：没有脚本、没有字体 CDN、没有远程样式表。断网双击照样打开。
+
+![跨厂商对比](https://raw.githubusercontent.com/SilasSolivagus/agent-ledger/main/docs/cross.png)
 
 ## 为什么没有「谁更好」
 
@@ -118,8 +130,12 @@ agent-ledger report --redact --out safe.html # 导出一份可以给别人看的
 ## 开发
 
 ```sh
-pnpm install && pnpm run check   # 构建 + 109 个测试
+pnpm install && pnpm run check          # 构建 + 115 个测试
+node scripts/demo-fixture.mjs /tmp/demo # 造一台假机器的记录
+HOME=/tmp/demo node bin/agent-ledger.js serve --fresh
 ```
+
+`demo-fixture.mjs` 按两家的真实记录格式写文件，所以它同时是这两种格式的第三份文档——而且是能跑起来的那份。README 里的截图就是它生成的。
 
 代理相关的测试是重点：它站在人和他们付费使用的模型之间，所以「字节原样透传」「我们的 bug 绝不能变成用户的报错」必须被验证，而不是写在注释里。
 
