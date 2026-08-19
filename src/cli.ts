@@ -19,6 +19,7 @@ import { renderDashboard } from './render.js'
 import { readAllSessions } from './transcript.js'
 import { serve } from './serve.js'
 import { defaultStatePath } from './baseline.js'
+import { defaultTallyPath } from './tally.js'
 import { redactAll } from './redact.js'
 import type { Session, Step } from './types.js'
 
@@ -194,6 +195,7 @@ export async function main(argv: readonly string[]): Promise<number> {
         redact: rest.includes('--redact'),
         refreshSeconds: Number(flag('--refresh') ?? 5),
         state: defaultStatePath(),
+        tally: defaultTallyPath(),
         fresh: rest.includes('--fresh'),
         colour: rest.includes('--color'),
       },

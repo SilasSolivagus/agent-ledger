@@ -29,6 +29,7 @@ import {
   baselineFrom, boardsOf, movedSince, sinceBaseline, windowFrom, RANGES, type Baseline,
 } from './live.js'
 import { readBaseline, writeBaseline } from './baseline.js'
+import { fillTally, readTally, totalsSince, type Tally } from './tally.js'
 import { readWorkbuddySessions, workbuddyTouchedAt, type WorkbuddyDetail } from './workbuddy.js'
 import { redactSession } from './redact.js'
 import type { Session } from './types.js'
@@ -52,6 +53,14 @@ export interface ServeOptions {
   state?: string
   /** Ignore any stored baseline and start watching from now. */
   fresh?: boolean
+  /**
+   * Where to keep the per-file token count across restarts.
+   *
+   * Absent means no persistence and no background fill — the same rule the
+   * other paths follow, so a test that forgets it counts nothing rather than
+   * reading the developer's own machine.
+   */
+  tally?: string
   /** Hue encodes which vendor; lightness still encodes how much. Off by default. */
   colour?: boolean
   /**
@@ -127,6 +136,18 @@ export function createLedgerServer(options: ServeOptions, now = Date.now()): Ser
     return made
   })()
   const refreshSeconds = options.refreshSeconds ?? 5
+
+  // Totals cover the whole window, so they cannot be computed on the request
+  // that needs them: parsing this machine's transcripts takes about half a
+  // minute. The count is filled behind the server instead, resumed from disk,
+  // and the page says how much is still outstanding.
+  const tally: Tally = { files: new Map(), pending: 0 }
+  const counted: Promise<void> = (async (): Promise<void> => {
+    tally.files = await readTally(options.tally)
+    if (options.tally === undefined) return
+    const files = await listTranscripts(Infinity, sources)
+    await fillTally(tally, files, options.tally)
+  })().catch(() => undefined)
 
   /** Parse a file, or hand back the copy that is still good. */
   const load = async (file: TranscriptFile): Promise<Session | undefined> => {
@@ -247,12 +268,19 @@ export function createLedgerServer(options: ServeOptions, now = Date.now()): Ser
         // through here even though no source is named that.
         const chosen = wanted === 'all' || watching.includes(wanted) ? wanted
           : agents[0] ?? watching[0] ?? ''
+        // The list stays capped; the totals do not. That split is the point —
+        // a session list nobody scrolls versus a figure someone checks against
+        // a bill. The watch window is small enough to count from what was just
+        // parsed, so it keeps doing that.
+        void counted
+        const totals = range === 'watch' ? undefined
+          : totalsSince(tally, since, chosen === 'all' ? undefined : chosen)
         res.writeHead(200, HTML).end(renderLive(
           boards, watching, since, chosen,
           picked === '' ? undefined : picked,
           paused ? null : refreshSeconds, zoom, compress, source, range,
           capped === 0 ? undefined : { dropped: capped, limit: options.limit },
-          Object.values(sources), pulse, options.colour === true,
+          Object.values(sources), pulse, options.colour === true, totals,
         ))
         return
       }

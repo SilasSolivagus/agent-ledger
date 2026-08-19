@@ -18,6 +18,7 @@ import { T, esc, jitter, ms, money, moneyAll, span } from './html.js'
 import { costOf, priceNote, spendOf, PRICED_AT } from './price.js'
 import { RANGES } from './live.js'
 import { laddersFor, hueFor, MONO } from './palette.js'
+import type { Totals as WindowTotals } from './tally.js'
 
 /**
  * Where this came from, for the page that travels.
@@ -575,6 +576,7 @@ function grossTokens(t: { input: number; output: number; cacheRead: number; cach
  */
 function crossVendor(
   sessions: readonly Session[], since: number, range: string, colour: boolean,
+  window?: WindowTotals,
 ): string {
   const kinds = new Set(sessions.map(one => one.agent))
   // Two vendor names is not two comparable things. Every figure in this panel
@@ -671,6 +673,14 @@ export function renderLive(
   pulse = '',
   /** `--color`: hue encodes which vendor, lightness still encodes how much. */
   colour = false,
+  /**
+   * Window totals counted over every file, not just the ones on the board.
+   *
+   * The list is capped by `--limit` and the total is not, so these two
+   * disagree on purpose: the sidebar shows the newest sessions, this shows
+   * what the window actually came to.
+   */
+  totals?: WindowTotals,
 ): string {
   const agents = [...boards.keys()]
   // Every link on this page has to carry the window, or clicking a vendor
@@ -730,13 +740,13 @@ export function renderLive(
 
   const noRecords = list.length > 0 && list.every(one => one.steps.length === 0 && (one.events ?? []).length === 0)
   const main = active === 'all' && session === undefined
-    ? crossVendor(everySession, since, range, colour)
+    ? crossVendor(everySession, since, range, colour, totals)
     : session === undefined && list.length > 0
     ? `<div class="digesthead"><span class="who">${esc(agentLabel(active))}</span>
   <span class="dim">总览 · ${list.length} 个活跃会话 · ${windowNote(since, range)}</span></div>
 <div class="digest">${noRecords
     ? renderSourceBoard(sourceDetails.filter(d => list.some(one => one.id === d.id)), colour)
-    : renderDigest(digest(active, list), colour)}</div>`
+    : renderDigest(digest(active, list), colour, totals)}</div>`
     : session === undefined
     ? emptyBoard(active, watching, looked, range)
     : `${boardHeading(session)}
@@ -916,7 +926,7 @@ function spendCard(d: Digest): string {
 </div>`
 }
 
-export function renderDigest(d: Digest, colour = false): string {
+export function renderDigest(d: Digest, colour = false, totals?: WindowTotals): string {
   const n = (v: number): string => v.toLocaleString('en-US')
   // A source can record what happened without recording when or how much.
   // Cursor stamps no record and reports no usage, so every timing and token
@@ -948,7 +958,8 @@ export function renderDigest(d: Digest, colour = false): string {
     ${fig(n(d.turns), '轮次')}
     ${fig(n(d.steps), '步数')}
     ${fig(n(d.calls), '工具调用')}
-    ${fig(n(grossTokens(d)), '总量 token')}
+    ${totals === undefined ? fig(n(grossTokens(d)), '总量 token')
+      : fig(n(totals.gross), totals.pending > 0 ? `总量 token · 统计中 ${String(totals.pending)}` : '总量 token · 全窗口')}
     ${fig(n(d.output), '其中输出')}
     ${fig(`${(d.cacheHitRate * 100).toFixed(0)}%`, '缓存命中')}
     ${fig(n(d.errors), '调用失败')}
@@ -957,7 +968,11 @@ export function renderDigest(d: Digest, colour = false): string {
       // "where is the money" — which is the answer to "did I bury it".
       d.spend.priced === 0 ? fig('—', '花费') : fig(moneyAll(d.spend.totals), '花费')}
   </div>
-  <div class="src">总量 = 新鲜输入 + 输出 + 缓存读 + 缓存写，与厂商用量页同口径 —— 缓存读通常占绝大部分，因此总量比「新鲜输入」高一到两个数量级属正常</div>
+  <div class="src">总量 = 新鲜输入 + 输出 + 缓存读 + 缓存写，与厂商用量页同口径 —— 缓存读通常占绝大部分，因此总量比「新鲜输入」高一到两个数量级属正常${
+    totals === undefined ? ''
+      : totals.pending > 0
+        ? `。当前仍有 ${String(totals.pending)} 个记录未计入，数值会继续上升`
+        : '。本窗口内全部记录均已计入，未受 --limit 截断，可直接与厂商用量页对账（按自然日划分）'}</div>
 </div>`
   return `${headline}
 ${gap}
